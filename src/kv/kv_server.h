@@ -3,7 +3,7 @@
 
 #include <string>
 
-#include "../storage/storage_engine.h"
+#include "storage_engine.h"
 
 class KVServer
 {
