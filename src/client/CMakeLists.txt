@@ -9,6 +9,4 @@ target_include_directories(client
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-
 add_executable(client_app kv_client.cpp)
-
