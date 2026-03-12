@@ -18,6 +18,7 @@ endif()
 
 add_subdirectory(src/client)
 add_subdirectory(src/storage)
+add_subdirectory(src/kv)
 
 add_executable(minikv main.cpp)
 
@@ -25,6 +26,7 @@ target_link_libraries(minikv
     PRIVATE
     client
     storage
+    kv_server
 )
 
 
