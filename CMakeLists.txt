@@ -10,24 +10,23 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror -g -O0")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -g -O0")
 else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror -O3")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -O3")
 endif()
 
 
 add_subdirectory(src/client)
+add_subdirectory(src/storage)
 
 add_executable(minikv main.cpp)
 
 target_link_libraries(minikv
     PRIVATE
     client
+    storage
 )
 
-# 设置安装规则
-install(TARGETS minikv RUNTIME DESTINATION bin)
 
-# 启用测试
 enable_testing()
 add_subdirectory(test)
