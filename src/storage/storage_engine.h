@@ -8,16 +8,16 @@
 class StorageEngine
 {
 public:
-    bool put(const std::string& key, const std::string& value);
+    bool Put(const std::string& key, const std::string& value);
 
-    bool get(const std::string& key, std::string& value);
+    bool Get(const std::string& key, std::string& value);
 
-    bool del(const std::string& key);
+    bool Del(const std::string& key);
 
 private:
-    std::unordered_map<std::string, std::string> kv_store;
+    std::unordered_map<std::string, std::string> kv_store_;
 
-    std::mutex mtx;
+    std::mutex mtx_;
 };
 
 #endif

@@ -8,12 +8,12 @@ class RpcClient
 public:
     RpcClient(std::string host, int port);
 
-    std::string call(const std::string& request);
+    std::string Call(const std::string& request);
 
 private:
-    std::string host;
+    std::string host_;
 
-    int port;
+    int port_;
 };
 
 #endif //  RPC_CLIENT_H_

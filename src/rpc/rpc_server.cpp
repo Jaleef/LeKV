@@ -1,66 +1,71 @@
 #include "rpc_server.h"
 
+#include <cstring>
 #include <iostream>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <sstream>
+#include <thread>
 
 
+RpcServer::RpcServer(int port): port_(port) {}
 
-RpcServer::RpcServer(int port) {
-    this->port = port;
+void RpcServer::RegisterHandler(const std::string& name, Handler handler) {
+    handlers_[name] = handler;
 }
 
-void RpcServer::register_handler(const std::string& cmd, std::function<std::string(const std::string&)> handler) {
-    handlers[cmd] = handler;
-}
-
-void RpcServer::start() {
+void RpcServer::Start() {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     sockaddr_in addr{};
 
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(port_);
     addr.sin_addr.s_addr = INADDR_ANY;
 
     bind(server_fd, (sockaddr*)&addr, sizeof(addr));
 
     listen(server_fd, 10);
 
-    std::cout << "RPC Server listening on port " << port << std::endl;
+    std::cout << "RPC Server listening on port " << port_ << std::endl;
 
     while (true) {
-        int client_sock = accept(server_fd, nullptr, nullptr);
+        int client_fd = accept(server_fd, nullptr, nullptr);
 
-        handle_client(client_sock);
+        std::thread([this, client_fd]() {
+            char buffer[1024] = {0};
 
-        close(client_sock);
+            while (true) {
+                memset(buffer, 0, sizeof(buffer));
+
+                int n = recv(client_fd, buffer, sizeof(buffer), 0);
+
+                if (n <= 0) {
+                    std::cout << "连接关闭" << std::endl;
+                    break;
+                }
+
+                std::string req(buffer, n);
+
+                std::cout << req << std::endl;
+
+                std::stringstream ss(req);
+
+                std::string cmd;
+
+                ss >> cmd;
+
+                std::string resp = "UNKNOWN CMD";
+
+                if (handlers_.count(cmd)) {
+                    resp = handlers_[cmd](req);
+                }
+
+                send(client_fd, resp.c_str(), resp.size(), 0);
+            }
+
+            close(client_fd);
+
+        }).detach();
     }
-}
-
-void RpcServer::handle_client(int client_sock) {
-    char buffer[1024] = {0};
-
-    read(client_sock, buffer, sizeof(buffer));
-
-    std::string request(buffer);
-
-    std::stringstream ss(request);
-
-    std::string cmd;
-
-    ss >> cmd;
-
-    if (handlers.count(cmd) == 0) {
-        std::string resp = "UNKNOWN CMD\n";
-    
-        write(client_sock, resp.c_str(), resp.size());
-    
-        return;
-    }
-
-    std::string resp = handlers[cmd](request);
-
-    write(client_sock, resp.c_str(), resp.size());
 }

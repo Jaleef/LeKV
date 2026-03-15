@@ -8,19 +8,18 @@
 class RpcServer
 {
 public:
+    using Handler = std::function<std::string(const std::string&)>;
+
     RpcServer(int port);
 
-    void register_handler(const std::string& cmd,
-                          std::function<std::string(const std::string&)> handler);
+    void RegisterHandler(const std::string& cmd, Handler handler);
     
-    void start();
+    void Start();
 
 private:
-    int port;
+    int port_;
 
-    std::unordered_map<std::string, std::function<std::string(const std::string&)>> handlers;
-
-    void handle_client(int client_socket);
+    std::unordered_map<std::string, Handler> handlers_;
 };
 
 #endif // RPC_SERVER_H_

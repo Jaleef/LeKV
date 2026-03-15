@@ -1,21 +1,21 @@
 #include "storage_engine.h"
 
-bool StorageEngine::put(const std::string& key, const std::string& value)
+bool StorageEngine::Put(const std::string& key, const std::string& value)
 {
-    std::lock_guard<std::mutex> lock(mtx);
+    std::lock_guard<std::mutex> lock(mtx_);
 
-    kv_store[key] = value;
+    kv_store_[key] = value;
 
     return true;
 }
 
-bool StorageEngine::get(const std::string& key, std::string& value)
+bool StorageEngine::Get(const std::string& key, std::string& value)
 {
-    std::lock_guard<std::mutex> lock(mtx);
+    std::lock_guard<std::mutex> lock(mtx_);
 
-    auto it = kv_store.find(key);
+    auto it = kv_store_.find(key);
 
-    if (it == kv_store.end())
+    if (it == kv_store_.end())
         return false;
 
     value = it->second;
@@ -23,16 +23,16 @@ bool StorageEngine::get(const std::string& key, std::string& value)
     return true;
 }
 
-bool StorageEngine::del(const std::string& key)
+bool StorageEngine::Del(const std::string& key)
 {
-    std::lock_guard<std::mutex> lock(mtx);
+    std::lock_guard<std::mutex> lock(mtx_);
 
-    auto it = kv_store.find(key);
+    auto it = kv_store_.find(key);
 
-    if (it == kv_store.end())
+    if (it == kv_store_.end())
         return false;
 
-    kv_store.erase(it);
+    kv_store_.erase(it);
 
     return true;
 }

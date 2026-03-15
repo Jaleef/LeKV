@@ -8,11 +8,13 @@ target_include_directories(kv_server
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE
-    ${CMAKE_SOURCE_DIR}/storage
+    ${CMAKE_SOURCE_DIR}/src/storage
+    ${CMAKE_SOURCE_DIR}/src/rpc
 )
 
 target_link_libraries(kv_server
     PUBLIC
     storage
+    rpc_server
 )
 
