@@ -1,6 +1,6 @@
 # storage/CMakeLists.txt
 add_library(storage
-    storage_engine.h
+    STATIC
     storage_engine.cpp
 )
 

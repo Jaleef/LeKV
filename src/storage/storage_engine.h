@@ -4,20 +4,26 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
+#include <optional>
 
-class StorageEngine
-{
+class StorageEngine {
 public:
+    StorageEngine() = default;
+    ~StorageEngine() = default;
+
+    // 禁止拷贝
+    StorageEngine(const StorageEngine&) = delete;
+    StorageEngine& operator=(const StorageEngine&) = delete;
+
+    // 基础 KV 操作
     bool Put(const std::string& key, const std::string& value);
-
-    bool Get(const std::string& key, std::string& value);
-
-    bool Del(const std::string& key);
+    std::optional<std::string> Get(const std::string& key);
+    bool Delete(const std::string& key);
 
 private:
-    std::unordered_map<std::string, std::string> kv_store_;
+    std::unordered_map<std::string, std::string> data_;
 
-    std::mutex mtx_;
+    std::mutex mutex_;
 };
 
 #endif
