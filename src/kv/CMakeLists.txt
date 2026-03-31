@@ -1,20 +1,16 @@
 # kv/CMakeLists.txt
-add_library(kv_server
-    kv_server.h
-    kv_server.cpp
+add_library(raftnode
+    raft_node.cpp
 )
 
-target_include_directories(kv_server
+target_include_directories(raftnode
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
-    PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/storage
-    ${CMAKE_SOURCE_DIR}/src/rpc
 )
 
-target_link_libraries(kv_server
+target_link_libraries(raftnode
     PUBLIC
     storage
-    rpc_server
+    rpc
 )
 
