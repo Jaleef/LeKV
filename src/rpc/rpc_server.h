@@ -1,25 +1,34 @@
 #ifndef RPC_SERVER_H_
 #define RPC_SERVER_H_
 
+#include "text_protocol.h"
+
 #include <string>
 #include <functional>
-#include <unordered_map>
+#include <atomic>
+#include <thread>
 
 class RpcServer
 {
 public:
-    using Handler = std::function<std::string(const std::string&)>;
+    using Handler = std::function<std::string(const Command& cmd)>;
 
-    RpcServer(int port);
+    explicit RpcServer(uint16_t port);
+    ~RpcServer();
 
-    void RegisterHandler(const std::string& cmd, Handler handler);
-    
-    void Start();
+    bool Start(Handler handler);
+
+    void Stop();
 
 private:
-    int port_;
+    void AcceptLoop();
+    void HandleClient(int client_fd);
 
-    std::unordered_map<std::string, Handler> handlers_;
+    uint16_t port_;
+    int listen_fd_ = 1;
+    std::atomic<bool> running_{false};
+    std::thread accept_thread_;
+    Handler handler_;
 };
 
 #endif // RPC_SERVER_H_

@@ -5,8 +5,8 @@ target_include_directories(rpc_client
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-add_library(rpc_server rpc_server.cpp)
-target_include_directories(rpc_server
+add_library(rpc text_protocol.cpp rpc_server.cpp)
+target_include_directories(rpc
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
