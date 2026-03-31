@@ -6,5 +6,6 @@ add_subdirectory(rpc)
 
 add_executable(lekv lekv.cpp)
 target_link_libraries(lekv
-    kv_server storage rpc_server
+    PRIVATE
+    raftnode
 )
