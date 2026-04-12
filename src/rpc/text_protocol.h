@@ -36,6 +36,9 @@ public:
     static std::string Ok(const std::string& data = "");
     static std::string Err(const std::string& code, const std::string& msg);
 
+    // 分割参数字符串 (处理空格分隔)
+    static std::vector<std::string> SplitArgs(const std::string& line);
+
     // 分布式接口
     static std::string EncodeVoteRequest(uint64_t term, uint64_t candidate_id,
                                         uint64_t last_log_idx, uint64_t last_log_term);

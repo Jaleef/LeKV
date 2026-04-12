@@ -35,3 +35,17 @@ std::string TextProtocol::Ok(const std::string& data) {
 std::string TextProtocol::Err(const std::string& code, const std::string& msg) {
     return "-ERR " + code + " " + msg + "\r\n";
 }
+
+std::vector<std::string> TextProtocol::SplitArgs(const std::string &line) {
+    std::vector<std::string> parts;
+    std::istringstream iss(line);
+    std::string part;
+    while (iss >> part) {
+        parts.push_back(part);
+    }
+    return parts;
+}
+
+std::string TextProtocol::EncodeAppendResponse(uint64_t term, bool success) {
+    return "APPEND_RESP " + std::to_string(term) + " " + (success ? "true" : "false") + "\r\n";
+}
