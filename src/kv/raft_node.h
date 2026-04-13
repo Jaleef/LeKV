@@ -48,7 +48,7 @@ private:
     std::string GetLeaderAddr() const { return "127.0.0.1:" + std::to_string(LEADER_PORT); }
 
     // 配置
-    uint16_t LEADER_PORT = 9001;
+    static const uint16_t LEADER_PORT = 9001;
     uint64_t node_id_;
     uint16_t port_;
     std::vector<PeerInfo> peers_;
@@ -63,7 +63,6 @@ private:
     std::mutex mutex_;
     uint64_t current_term_ = 1;     // 固定从 1 开始，Leader固定，term简单递增
     std::vector<LogEntry> log_;     // 日志条目, index 从 1 开始, log_[0] 是占位符
-    RaftState state_;               // 身份节点
 
     // 易失性状态(所有节点)
     uint64_t commit_index_ = 0;     // 已知的最高提交索引

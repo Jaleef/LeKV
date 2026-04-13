@@ -36,12 +36,6 @@ RaftNode::RaftNode(uint64_t node_id, uint16_t port, const std::vector<PeerInfo>&
     } else {
         std::cout << "[Node " << node_id_ << "] Starting as FOLLOWER (accepting from " << LEADER_PORT << ")" << std::endl;
     }
-
-    if (IsLeader()) {
-        state_ = RaftState::Leader;
-    } else {
-        state_ = RaftState::Follower;
-    }
 }
 
 RaftNode::~RaftNode() {
@@ -94,6 +88,27 @@ void RaftNode::Stop() {
 
     for (auto& [id, client] : peer_clients_) {
         client->Close();
+    }
+}
+
+// ========== 所有节点: 应用到状态机 ==========
+void RaftNode::ApplyLoop() {
+    while (running_) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [this]() {
+            return !running_ || last_applied_ < commit_index_;
+        });
+
+        while (last_applied_ < commit_index_) {
+            last_applied_++;
+            const auto& entry = log_[last_applied_];
+            lock.unlock();
+
+            // 应用到存储引擎
+            ApplyLogEntry(entry);
+
+            lock.lock();
+        }
     }
 }
 
@@ -230,26 +245,6 @@ void RaftNode::AdvanceCommitIndex() {
     }
 }
 
-// ========== 所有节点: 应用到状态机 ==========
-void RaftNode::ApplyLoop() {
-    while (running_) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this]() {
-            return !running_ || last_applied_ < commit_index_;
-        });
-
-        while (last_applied_ < commit_index_) {
-            last_applied_++;
-            const auto& entry = log_[last_applied_];
-            lock.unlock();
-
-            // 应用到存储引擎
-            ApplyLogEntry(entry);
-
-            lock.lock();
-        }
-    }
-}
 
 void RaftNode::ApplyLogEntry(const LogEntry& entry) {
     // 解析 command (格式: "PUT k v" 或 "DELETE k"
