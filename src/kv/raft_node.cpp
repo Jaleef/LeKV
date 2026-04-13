@@ -53,8 +53,6 @@ void RaftNode::Run() {
         return;
     }
 
-    std::cout << "KV Server started on port " + port_ << std::endl;
-
     running_ = true;
 
     // 启动 ApplyLoop (所有节点)
@@ -192,6 +190,10 @@ void RaftNode::ReplicateLog(uint64_t peer_id, bool heartbeat) {
         return;
     }
 
+    // 打印 APPEND 响应，便于调试
+    PrintRole();
+    std::cout << "Received APPEND_RESP from " << peer_id << ": " << resp << std::endl;
+
     // 解析响应: APPEND_RESP <term> <success>
     auto parts = TextProtocol::SplitArgs(resp);
     if (parts.size() >= 3 && parts[0] == "APPEND_RESP") {
@@ -236,8 +238,10 @@ void RaftNode::AdvanceCommitIndex() {
             if (n > commit_index_) {
                 commit_index_ = n;
                 cv_.notify_all();
-                std::cout << "[Leader] CommitIndex advanced to " << commit_index_
-                    << " (acked by " << ack_count << "/" << peers_.size() << std::endl;
+
+                PrintRole();
+                std::cout << "CommitIndex advanced to " << commit_index_
+                    << " (acked by " << ack_count << "/" << peers_.size() << ")" << std::endl;
             }
         } else {
             break;      // 不满足多数派，停止检查更大的N
@@ -254,18 +258,30 @@ void RaftNode::ApplyLogEntry(const LogEntry& entry) {
 
     if (cmd_type == "PUT") {
         storage_.Put(key, value);
-        if (IsLeader()) {
-            std::cout << "[Leader] Applied[" << entry.index << "]: PUT" << key << std::endl;
-        } else {
-            std::cout << "[Follower " << port_ << "] Applied[" << entry.index << "]" << std::endl;
-        }
+
+        PrintRole();
+        std::cout << "Applied[" << entry.index << "]: PUT " << key << " = " << value << std::endl;
+
     } else if (cmd_type == "DELETE") {
         storage_.Delete(key);
+
+        PrintRole();
+        std::cout << "Applied[" << entry.index << "]: DELETE " << key << std::endl;
+
     }
 }
 
 // ========== 命令处理 ==========
 std::string RaftNode::HandleCommand(const Command& cmd) {
+    
+    // 简单日志输出收到的命令，便于调试，后续需要删除
+    PrintRole();
+    std::cout << "Received command: " << cmd.name;
+    for (const std::string& arg : cmd.args) {
+        std::cout << " " << arg;
+    }
+    std::cout << std::endl;
+
     if (cmd.name == "PUT" || cmd.name == "DELETE") {
         return HandleClientPut(cmd.args.size() > 0 ?  cmd.args[0] : "",
                                 cmd.args.size() > 1 ? cmd.args[1] : "");
@@ -300,7 +316,8 @@ std::string RaftNode::HandleClientPut(const std::string& key, const std::string&
     // 追加到 Leader 日志 (但未提交，需等待复制到多数派)
     log_.push_back(entry);
 
-    std::cout << "[Leader] New log[" << entry.index << "] at Term "
+    PrintRole();
+    std::cout << "New log[" << entry.index << "] at Term "
         << entry.term << ": " << entry.command << std::endl;
 
     // 注意：这里立即返回 OK，但数据实际还未提交（Raft 标准做法是异步等待或客户端轮询）
@@ -356,21 +373,34 @@ std::string RaftNode::HandleAppendEntries(const Command& cmd) {
     }
 
     // 追加新条目 (从 args[5] 开始)
+    LogEntry entry;
     for (size_t i = 5 ; i < cmd.args.size() ; ++i) {
-        LogEntry entry;
         if (entry.Deserialize(cmd.args[i])) {
-            // 确保索引连接
-            if (entry.index == log_.size()) {
-                log_.push_back(entry);
-            }
+
+        } else {
+            entry.command += " " + cmd.args[i];
         }
     }
+    // 确保索引连接
+    if (entry.index == log_.size()) {
+        log_.push_back(entry);
+    }
+
+    PrintRole();
+    for (const auto& entry : log_) {
+        std::cout << "Log[" << entry.index << "]: term = " << entry.term
+            << ", cmd = " << entry.command << std::endl;
+    }
+    std::cout << std::endl;
 
     // 更新 commit_index (Follower 的 commit 不能超过 Leader 告知的 commit_index)
     if (leader_commit > commit_index_) {
         commit_index_ = std::min(leader_commit, GetLastLogIndex());
         cv_.notify_all();
     }
+
+    PrintRole();
+    std::cout << "commit_index: " << commit_index_ << ", applied_index: " << last_applied_ << std::endl;
 
     return TextProtocol::EncodeAppendResponse(current_term_, true);
 }
@@ -385,4 +415,12 @@ uint64_t RaftNode::GetLastLogTerm() const {
         return 0;
     }
     return log_.back().term;
+}
+
+void RaftNode::PrintRole() const {
+    if (IsLeader()) {
+        std::cout << "[Leader] ";
+    } else {
+        std::cout << "[Follower " << port_ << "] ";
+    }
 }

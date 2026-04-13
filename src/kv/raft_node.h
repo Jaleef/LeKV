@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 #include <condition_variable>
+#include <fstream>
 
 
 class RaftNode {
@@ -36,18 +37,25 @@ private:
     std::string HandleClientGet(const std::string& key);
     std::string HandleAppendEntries(const Command& cmd);        // Follower 处理
 
-    // Leader 辅助函数
+    // 日志管理
+    void ApplyLogEntry(const LogEntry& entry);
     void ReplicateLog(uint64_t peer_id, bool heartbeat);        // 向单个节点发送日志
     void AdvanceCommitIndex();                                  // 检查半数以上确认
-    void ApplyLogEntry(const LogEntry& entry);
 
     // 工具函数
     uint64_t GetLastLogIndex() const;
     uint64_t GetLastLogTerm() const;
     std::string GetLeaderAddr() const { return "127.0.0.1:" + std::to_string(LEADER_PORT); }
+    void PrintRole() const;
+
+    // WAL 持久化操作
+    bool InitWAL();                             // 初始化 WAL 文件
+    bool AppendToWAL(const LogEntry& entry);    // 追加单条到 WAL
+    bool RestoreFromWAL();                      // 从 WAL 恢复日志
+    void MaybeFsync();                          // 批量刷盘
 
     // 配置
-    static const uint16_t LEADER_PORT = 9001;
+    static constexpr uint16_t LEADER_PORT = 9001;
     uint64_t node_id_;
     uint16_t port_;
     std::vector<PeerInfo> peers_;
@@ -77,6 +85,13 @@ private:
     std::thread leader_thread_;
     std::thread apply_thread_;
     std::condition_variable cv_;
+
+    // WAL 成员变量
+    std::ofstream wal_file_;         // WAL 文件句柄
+    std::string wal_filename_;       // WAL 文件名
+    std::mutex wal_mutex_;           // WAL 文件访问锁
+    uint64_t wal_last_fsync_index_ = 0;                 // 上次刷盘的日志索引
+    static constexpr uint64_t WAL_FSYNC_INTERVAL = 10;  // 每10条日志刷盘一次
 };
 
 #endif //LEKV_RAFT_NODE_H
