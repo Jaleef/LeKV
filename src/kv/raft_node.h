@@ -34,7 +34,6 @@ private:
     std::string HandleCommand(const Command& cmd);
     std::string HandleClientPut(const std::string& key, const std::string& value);
     std::string HandleClientGet(const std::string& key);
-    std::string HandleDelete(const std::string& key);
     std::string HandleAppendEntries(const Command& cmd);        // Follower 处理
 
     // Leader 辅助函数
