@@ -266,7 +266,7 @@ void RaftNode::ApplyLogEntry(const LogEntry& entry) {
 
 // ========== 命令处理 ==========
 std::string RaftNode::HandleCommand(const Command& cmd) {
-    if (cmd.name == "PUT" || cmd.name == "DELETE" || cmd.name == "DEL") {
+    if (cmd.name == "PUT" || cmd.name == "DELETE") {
         return HandleClientPut(cmd.args.size() > 0 ?  cmd.args[0] : "",
                                 cmd.args.size() > 1 ? cmd.args[1] : "");
     } else if (cmd.name == "GET") {
