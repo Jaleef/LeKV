@@ -50,8 +50,8 @@ private:
 
     // WAL 持久化操作
     bool InitWAL();                             // 初始化 WAL 文件
-    bool AppendToWAL(const LogEntry& entry);    // 追加单条到 WAL
-    bool RestoreFromWAL();                      // 从 WAL 恢复日志
+    void AppendToWAL(const LogEntry& entry);    // 追加单条到 WAL
+    void RestoreFromWAL();                      // 从 WAL 恢复日志
     void MaybeFsync();                          // 批量刷盘
 
     // 配置

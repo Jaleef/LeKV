@@ -10,8 +10,14 @@ RaftNode::RaftNode(uint64_t node_id, uint16_t port, const std::vector<PeerInfo>&
     : node_id_(node_id), port_(port), peers_(peers), rpc_server_(port),
     quorum_size_(peers.size() / 2 + 1) {
 
-    // 初始化日志 (占位符，index 从 1 开始)
-    log_.push_back({0, 0, ""});
+    // 初始化日志 (占位符，使有效日志从 index 1 开始)
+    log_.push_back({1, 0, ""}); // term=1, index=0, 空命令
+
+    // 初始化 WAL (先恢复，再打开文件追加)
+    if (!InitWAL()) {
+        std::cerr << "Failed to initialize WAL, starting with empty state" << std::endl;
+    }
+
     if (IsLeader()) {
         std::cout << "[Node " << node_id_ << "] Starting as LEADER (fixed " << LEADER_PORT << ")" << std::endl;
         std::cout << "[Leader] Quorum size: " << quorum_size_ << " (need " << quorum_size_ << " acks to commit)" << std::endl;
@@ -29,7 +35,7 @@ RaftNode::RaftNode(uint64_t node_id, uint16_t port, const std::vector<PeerInfo>&
                     peer_clients_[peer.id] = std::move(client);
                     std::cout << "[Leader] Connected to Follower " << peer.port << std::endl;
                 } else {
-                    std::cout << "[Leader] Warning: Failed to connect to " << peer.port << std::endl;
+                    std::cerr << "[Leader] Warning: Failed to connect to " << peer.port << std::endl;
                 }
             }
         }
@@ -84,6 +90,16 @@ void RaftNode::Stop() {
     if (leader_thread_.joinable()) { leader_thread_.join(); }
     if (apply_thread_.joinable()) { apply_thread_.join(); }
 
+    // 关闭 WAL
+    {
+        std::lock_guard<std::mutex> lock(wal_mutex_);
+        if (wal_file_.is_open()) {
+            wal_file_.flush();
+            wal_file_.close();
+            std::cout << "[WAL] Closed" << std::endl;
+        }
+    }
+
     for (auto& [id, client] : peer_clients_) {
         client->Close();
     }
@@ -113,6 +129,8 @@ void RaftNode::ApplyLoop() {
 // ========== Leader 核心循环: 心跳 + 日志复制 ==========
 void RaftNode::LeaderLoop() {
     while (running_) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 每 100ms 进行一次复制尝试
+
         std::vector<std::thread> send_threads;
 
         {
@@ -282,14 +300,24 @@ std::string RaftNode::HandleCommand(const Command& cmd) {
     }
     std::cout << std::endl;
 
-    if (cmd.name == "PUT" || cmd.name == "DELETE") {
-        return HandleClientPut(cmd.args.size() > 0 ?  cmd.args[0] : "",
-                                cmd.args.size() > 1 ? cmd.args[1] : "");
+    if (cmd.name == "PUT") {
+        if (cmd.args.size() < 2) {
+            return TextProtocol::Err("ARGS", "PUT <key> <value>");
+        }
+        return HandleClientPut(cmd.args[0], cmd.args[1]);
+
     } else if (cmd.name == "GET") {
         if (cmd.args.empty()) {
             return TextProtocol::Err("ARGS", "GET <key>");
         }
         return HandleClientGet(cmd.args[0]);
+
+    } else if (cmd.name == "DELETE" || cmd.name == "DEL") {
+        if (cmd.args.empty()) {
+            return TextProtocol::Err("ARGS", "DELETE <key>");
+        }
+        return HandleClientPut(cmd.args[0], "");   // DELETE 通过 PUT 空值表示删除
+
     } else if (cmd.name == "APPEND") {
         return HandleAppendEntries(cmd);
     }
@@ -316,12 +344,14 @@ std::string RaftNode::HandleClientPut(const std::string& key, const std::string&
     // 追加到 Leader 日志 (但未提交，需等待复制到多数派)
     log_.push_back(entry);
 
+    // 写入 WAL
+    AppendToWAL(entry);
+
     PrintRole();
     std::cout << "New log[" << entry.index << "] at Term "
         << entry.term << ": " << entry.command << std::endl;
 
-    // 注意：这里立即返回 OK，但数据实际还未提交（Raft 标准做法是异步等待或客户端轮询）
-    // 生产环境应阻塞等待 commit_index >= entry.index 或返回 proposal id 供查询
+    // 注意：这里简化立即返回 OK，但数据实际还未提交（Raft 标准做法是异步等待或客户端轮询）
     return TextProtocol::Ok(std::to_string(entry.index));
 }
 
@@ -403,6 +433,120 @@ std::string RaftNode::HandleAppendEntries(const Command& cmd) {
     std::cout << "commit_index: " << commit_index_ << ", applied_index: " << last_applied_ << std::endl;
 
     return TextProtocol::EncodeAppendResponse(current_term_, true);
+}
+
+// ========== WAL 实现 ==========
+bool RaftNode::InitWAL() {
+    wal_filename_ = "wal_" + std::to_string(node_id_) + ".log";
+
+    // 尝试恢复
+    RestoreFromWAL();
+
+    // 以追加模式打开 (如果不存在则创建)
+    wal_file_.open(wal_filename_, std::ios::binary | std::ios::app);
+    if (!wal_file_.is_open()) {
+        std::cerr << "[WAL] Failed to open file: " << wal_filename_ << std::endl;
+        return false;
+    }
+
+    std::cout << "[WAL] Initialized, current log size: " << log_.size() - 1 << " entries" << std::endl;
+    return true;
+}
+
+void RaftNode::AppendToWAL(const LogEntry& entry) {
+    std::lock_guard<std::mutex> lock(wal_mutex_);
+
+    if (!wal_file_.is_open()) {
+        return ;
+    }
+
+    // 二进制格式：[8 bytes term][8 bytes index][4 bytes cmd_len][cmd_len bytes command]
+    uint64_t term = entry.term;
+    uint64_t index = entry.index;
+    uint32_t cmd_len = static_cast<uint32_t>(entry.command.size());
+
+    wal_file_.write(reinterpret_cast<const char*>(&term), sizeof(term));
+    wal_file_.write(reinterpret_cast<const char*>(&index), sizeof(index));
+    wal_file_.write(reinterpret_cast<const char*>(&cmd_len), sizeof(cmd_len));
+    wal_file_.write(entry.command.data(), cmd_len);
+
+    // 批量刷盘策略：每 WAL_FSYNC_INTERVAL 条目刷一次
+    if (entry.index - wal_last_fsync_index_ >= WAL_FSYNC_INTERVAL) {
+        wal_file_.flush();
+        wal_last_fsync_index_ = entry.index;
+    }
+}
+
+void RaftNode::RestoreFromWAL() {
+    std::ifstream file(wal_filename_, std::ios::binary);
+    if (!file.is_open()) {
+        std::cout << "[WAL] No existing WAL file, starting fresh" << std::endl;
+        return;
+    }
+
+    // 获取文件大小
+    file.seekg(0, std::ios::end);
+    std::streamsize file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    if (file_size == 0) {
+        std::cout << "[WAL] Empty WAL file" << std::endl;
+        return;
+    }
+
+    uint64_t max_index = 0;
+    uint64_t entry_count = 0;
+
+    // 清空当前日志 (保留占位符)
+    log_.clear();
+    log_.push_back({1, 0, ""}); // 空命令占位符
+
+    while (file.tellg() < file_size) {
+        uint64_t term, index;
+        uint32_t cmd_len;
+
+        // 读取条目头
+        file.read(reinterpret_cast<char*>(&term), sizeof(term));
+        file.read(reinterpret_cast<char*>(&index), sizeof(index));
+        file.read(reinterpret_cast<char*>(&cmd_len), sizeof(cmd_len));
+
+        if (file.gcount() != sizeof(cmd_len)) {
+            break;  // 读取失败，可能是文件损坏或不完整
+        }
+
+        // 读取命令
+        std::string command(cmd_len, '\0');
+        file.read(&command[0], cmd_len);
+
+        // 验证索引连续性：如果 index 不连续，说明 WAL 可能损坏，停止恢复
+        if (index != log_.size()) {
+            std::cerr << "[WAL] Warning: Index gap detected, expected " << log_.size()
+                << ", bug got " << index << std::endl;
+            
+            // 目前策略：继续（允许空洞）
+        }
+
+        // 恢复到内存日志
+        LogEntry entry{term, index, command};
+        log_.push_back(entry);
+        max_index = index;
+        entry_count++;
+    }
+
+    // 恢复提交索引 (假设 WAL 中的日志都是已提交的)
+    commit_index_ = max_index;
+
+    std::cout << "[WAL] Restored " << entry_count << " entries, last index: "
+        << max_index << ", commit_index restored to: " << commit_index_ << std::endl;
+    
+    file.close();
+}
+
+void RaftNode::MaybeFsync() {
+    std::lock_guard<std::mutex> lock(wal_mutex_);
+    if (wal_file_.is_open()) {
+        wal_file_.flush();
+    }
 }
 
 // ========== 工具函数 ==========
