@@ -39,7 +39,7 @@ private:
 
     // 日志管理
     void ApplyLogEntry(const LogEntry& entry);
-    void ReplicateLog(uint64_t peer_id, bool heartbeat);        // 向单个节点发送日志
+    void ReplicateLog(uint64_t peer_id, RpcClient* client, bool is_heartbeat);        // 向单个节点发送日志
     void AdvanceCommitIndex();                                  // 检查半数以上确认
 
     // 工具函数

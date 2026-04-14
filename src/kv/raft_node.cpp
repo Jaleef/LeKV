@@ -133,110 +133,168 @@ void RaftNode::ApplyLoop() {
 
 // ========== Leader 核心循环: 心跳 + 日志复制 ==========
 void RaftNode::LeaderLoop() {
+    using namespace std::chrono;
+
+    auto last_heartbeat = steady_clock::now();
+    const auto heartbeat_interval = milliseconds(50); // 50ms 心跳间隔
+
     while (running_) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 每 100ms 进行一次复制尝试
+        auto now = steady_clock::now();
+        bool need_heartbeat = (now - last_heartbeat) >= heartbeat_interval;
 
-        std::vector<std::thread> send_threads;
-
+        // 1. 收集需要复制的目标
+        std::vector<std::pair<uint64_t, RpcClient*>> targets;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+
             // 给每个 Follower 发送日志 (或心跳)
             for (const auto& [peer_id, client] : peer_clients_) {
-                if (!client->IsConnected()) { continue; }
+                if (!client->IsConnected()) { 
+                    // 尝试重连, 简单处理：每次循环尝试一次
+                    if (client->Connect(peers_[peer_id].ip, peers_[peer_id].port)) {
+                        // 重连成功，重置进度
+                        next_index_[peer_id] = GetLastLogIndex() + 1;
+                    }
+                    continue;
+                }
+                
+                uint64_t next_idx = next_index_[peer_id];
+                uint64_t last_idx = GetLastLogIndex();
+                bool has_new_logs = (next_idx <= last_idx);
 
-                // 简单策略: 每次循环都尝试同步该 Follower 缺失的日志
-                send_threads.emplace_back([this, peer_id]() {
-                    this->ReplicateLog(peer_id, false);
-                });
+                // 触发条件: 有新日志需要复制，或者需要定期发送心跳
+                if (has_new_logs || need_heartbeat) {
+                    targets.emplace_back(peer_id, client.get());
+                }
             }
+            
+        }
+        
+        // 2. 发送日志复制请求 (在 LeaderLoop 外部执行，避免阻塞)
+        for (const auto& [peer_id, client] : targets) {
+            ReplicateLog(peer_id, client, need_heartbeat);
+        }
+        
+        // 检查是否可以提交新日志，只要有复制发生就检查
+        if (need_heartbeat) {
+            AdvanceCommitIndex();
         }
 
-        // 等待本轮发送完毕 (简化处理，实际可以异步)
-        for (auto& t : send_threads) {
-            if (t.joinable()) {
-                t.join();
-            }
+        // 3. 更新心跳时间戳
+        if (need_heartbeat) {
+            last_heartbeat = steady_clock::now();
         }
 
-        // 检查是否可以提交新日志 (半数以上确认)
-        AdvanceCommitIndex();
-
-        // 50ms 心跳间隔
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        // 短暂休眠，避免紧密循环占用 CPU
+        std::this_thread::sleep_for(milliseconds(10));
     }
 }
 
-// ========== Leader 向单个 Follower 复制日志
-void RaftNode::ReplicateLog(uint64_t peer_id, bool heartbeat) {
-    auto it = peer_clients_.find(peer_id);
-    if (it == peer_clients_.end() || !it->second->IsConnected()) return;
+// ========== Leader 向单个 Follower 复制日志 ==========
+void RaftNode::ReplicateLog(uint64_t peer_id, RpcClient* client, bool is_heartbeat) {
 
-    uint64_t next_idx, match_idx, prev_idx, prev_term;
+    // 1. 拷贝当前状态，减少持有锁的时间
+    uint64_t next_idx, prev_idx, prev_term, commit_idx;
     std::vector<LogEntry> entries_to_send;
+    bool has_new_logs = false;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         next_idx = next_index_[peer_id];
-        match_idx = match_index_[peer_id];
+        commit_idx = commit_index_;
+
         uint64_t last_idx = GetLastLogIndex();
+        
+        has_new_logs = (next_idx <= last_idx);
 
-        // 如果没有新日志且不是强制心跳, 跳过 (LeaderLoop 里定期发送)
-        if (next_idx > last_idx && !heartbeat) return;
+        // 如果是心跳但没有新日志，且不是强制心跳周期，可以跳过
+        if (!has_new_logs && !is_heartbeat) {
+            return;
+        }
 
-        // 计算 prev_index 和 prev_term
+        // 计算 prev_idx 和 prev_term
         prev_idx = next_idx - 1;
         prev_term = (prev_idx > 0 && prev_idx < log_.size()) ? log_[prev_idx].term : 0;
 
-        // 收集要发送的条目(从 next_idx 到 last_idx, 限制批量大小)
-        for (uint64_t i = next_idx ; i <= last_idx && entries_to_send.size() < 100 ; ++i) {
-            entries_to_send.push_back(log_[i]);
+        // 准备要发送的日志条目 (从 next_idx 开始)
+        if (has_new_logs && next_idx <= last_idx) {
+            // 发送最多 10 条日志，避免一次发送过多
+            for (uint64_t i = next_idx ; i <= last_idx && entries_to_send.size() < 10 ; ++i) {
+                entries_to_send.push_back(log_[i]);
+            }
         }
     }
 
-    // 构造 APPEND 命令: APPEND <term> <leader_id> <prev_id> <prev_term> <commit_idx> [<entry>...]
+    // 2. 构造 AppendEntries RPC 请求
+    // APPEND 命令: APPEND <term> <leader_id> <prev_id> <prev_term> <commit_idx> [<entry>...]
     // 条目格式: term,index,command
-    std::string cmd = "APPEND " + std::to_string(current_term_) + " "
-        + std::to_string(node_id_) + " "
-        + std::to_string(prev_idx) + " "
-        + std::to_string(prev_term) + " "
-        + std::to_string(commit_index_);
+    std::string cmd = "APPEND " + 
+        std::to_string(current_term_) + " " +
+        std::to_string(node_id_) + " " +
+        std::to_string(prev_idx) + " " +
+        std::to_string(prev_term) + " " +
+        std::to_string(commit_idx);
 
+    // 附加日志条目 (如果有的话)
     for (const auto& entry : entries_to_send) {
         cmd += " " + entry.Serialize();
     }
 
-    // 同步发送并等待响应
-    std::string resp = it->second->Send(cmd, 1000);     // 1s 超时
+    // 3. 同步发送并等待响应 (在独立线程中调用，避免阻塞 LeaderLoop)
+    std::thread([this, peer_id, client, cmd, next_idx, entries_count = entries_to_send.size()]() {
+        std::string resp = client->Send(cmd, 1000); // 1秒超时
 
-    if (resp.empty()) {
-        // 超时或失败, 不更新进度, 下次重试
-        return;
-    }
+        if (resp.empty()) {
+            // 超时或失败, 不更新进度, 下次重试
+            return;
+        }
+    
+        // 解析响应: APPEND_RESP <term> <success>
+        auto parts = TextProtocol::SplitArgs(resp);
+        if (parts.size() < 3 || parts[0] != "APPEND_RESP") {
+            PrintRole();
+            std::cerr << "Invalid APPEND_RESP format from " << peer_id << ": " << resp << std::endl;
+            return;
+        }
 
-    // 打印 APPEND 响应，便于调试
-    PrintRole();
-    std::cout << "Received APPEND_RESP from " << peer_id << ": " << resp << std::endl;
-
-    // 解析响应: APPEND_RESP <term> <success>
-    auto parts = TextProtocol::SplitArgs(resp);
-    if (parts.size() >= 3 && parts[0] == "APPEND_RESP") {
+        uint64_t resp_term = std::stoull(parts[1]);
         bool success = (parts[2] == "true" || parts[2] == "+OK");
+            
+        std::lock_guard<std::mutex> lock(this->mutex_);
 
-        std::lock_guard<std::mutex> lock(mutex_);
+        // 检查任期，如果响应的任期比当前大，说明 Leader 已过时，应该降级为 Follower
+        if (resp_term > this->current_term_) {
+            // 我的 Leader 是固定的，理论上这种情况不会发生，但为了健壮性，还是处理一下
+            PrintRole();
+            std::cout << "Received higher term " << resp_term << " from " << peer_id
+                << ", stepping down to Follower" << std::endl;
+            this->current_term_ = resp_term;
+            // 这里简化处理：直接停止 LeaderLoop，实际应该更细致地切换状态
+            this->running_ = false;
+            this->cv_.notify_all();
+            return;
+        }
+
         if (success) {
             // 成功, 更新 match_index 和 next_index
-            if (!entries_to_send.empty()) {
-                uint64_t new_match = entries_to_send.back().index;
-                match_index_[peer_id] = std::max(match_index_[peer_id], new_match);
-                next_index_[peer_id] = new_match + 1;
+            if (entries_count > 0) {
+                // 发送了 entries_count 条日志，从 next_idx 开始，成功复制到 next_idx + entries_count - 1
+                uint64_t new_match = next_idx + entries_count - 1;
+
+                this->match_index_[peer_id] = std::max(this->match_index_[peer_id], new_match);
+                this->next_index_[peer_id] = new_match + 1;
             }
+            // 如果是心跳（没有新日志），也可以认为成功，保持 next_index 不变
+
         } else {
-            // 失败 (日志不匹配): Leader 递减 next_index 重试
-            if (next_index_[peer_id] > 1) {
-                next_index_[peer_id]--;
+            // 失败 (日志不匹配): Raft 标准做法 Leader 递减 next_index 重试
+            if (this->next_index_[peer_id] > 1) {
+                this->next_index_[peer_id]--;
+                PrintRole();
+                std::cout << "Append failed for " << peer_id << ", decrementing next_index to " << this->next_index_[peer_id] << std::endl;
             }
         }
-    }
+    }).detach(); // 分离线程，异步处理响应
 }
 
 // ========== Leader 检查半数以上确认, 推进 CommitIndex ==========
@@ -297,14 +355,6 @@ void RaftNode::ApplyLogEntry(const LogEntry& entry) {
 // ========== 命令处理 ==========
 std::string RaftNode::HandleCommand(const Command& cmd) {
     
-    // 简单日志输出收到的命令，便于调试，后续需要删除
-    PrintRole();
-    std::cout << "Received command: " << cmd.name;
-    for (const std::string& arg : cmd.args) {
-        std::cout << " " << arg;
-    }
-    std::cout << std::endl;
-
     if (cmd.name == "PUT") {
         if (cmd.args.size() < 2) {
             return TextProtocol::Err("ARGS", "PUT <key> <value>");
@@ -413,28 +463,16 @@ std::string RaftNode::HandleAppendEntries(const Command& cmd) {
         if (entry.Deserialize(cmd.args[i])) {
             // 确保索引连接
             if (entry.index == log_.size()) {
-                std::cout << "Appending new log entry from Leader: " << entry.command
-                    << " (term " << entry.term << ", index " << entry.index << ")" << std::endl;
                 log_.push_back(entry);
             }
         }
     }
-
-    PrintRole();
-    for (const auto& entry : log_) {
-        std::cout << "Log[" << entry.index << "]: term = " << entry.term
-            << ", cmd = " << entry.command << std::endl;
-    }
-    std::cout << std::endl;
 
     // 更新 commit_index (Follower 的 commit 不能超过 Leader 告知的 commit_index)
     if (leader_commit > commit_index_) {
         commit_index_ = std::min(leader_commit, GetLastLogIndex());
         cv_.notify_all();
     }
-
-    PrintRole();
-    std::cout << "commit_index: " << commit_index_ << ", applied_index: " << last_applied_ << std::endl;
 
     return TextProtocol::EncodeAppendResponse(current_term_, true);
 }
