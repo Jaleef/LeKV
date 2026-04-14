@@ -41,12 +41,18 @@ bool RpcServer::Start(Handler handler) {
 }
 
 void RpcServer::Stop() {
+    // 如果服务器已经停止，直接返回
+    if (!running_) {
+        return;
+    }
+
     running_ = false;
     if (listen_fd_ >= 0) {
+        // shutdown会强制中断 accept和recv等阻塞调用，使它们返回错误，从而让线程能够退出循环
+        shutdown(listen_fd_, SHUT_RDWR);
         close(listen_fd_);
         listen_fd_ = -1;
     }
-
     // 判断线程对象是否代表一个可等待的执行线程
     if (accept_thread_.joinable()) {
         // 阻塞线程，等待被调用的线程对象关联的线程执行完毕
@@ -59,7 +65,14 @@ void RpcServer::AcceptLoop() {
         sockaddr_in client_addr{};
         socklen_t len = sizeof(client_addr);
         int client_fd = accept(listen_fd_, (sockaddr*)&client_addr, &len);
-        if (client_fd < 0) continue;
+        if (client_fd < 0) {
+            // 如果服务器正在停止，accept会因为shutdown而返回错误，此时直接退出循环
+            if (!running_) {
+                break;
+            } 
+
+            continue;
+        }
 
         // 单机版简单处理，每个连接一个线程
         std::thread([this, client_fd]() {

@@ -79,6 +79,11 @@ void RaftNode::Run() {
 }
 
 void RaftNode::Stop() {
+    // 已经停止，避免重复执行
+    if (!running_) {
+        return;
+    }
+
     {
         std::lock_guard<std::mutex> lock(mutex_);
         running_ = false;
