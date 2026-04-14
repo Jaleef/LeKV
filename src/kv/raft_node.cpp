@@ -411,14 +411,13 @@ std::string RaftNode::HandleAppendEntries(const Command& cmd) {
     LogEntry entry;
     for (size_t i = 5 ; i < cmd.args.size() ; ++i) {
         if (entry.Deserialize(cmd.args[i])) {
-
-        } else {
-            entry.command += " " + cmd.args[i];
+            // 确保索引连接
+            if (entry.index == log_.size()) {
+                std::cout << "Appending new log entry from Leader: " << entry.command
+                    << " (term " << entry.term << ", index " << entry.index << ")" << std::endl;
+                log_.push_back(entry);
+            }
         }
-    }
-    // 确保索引连接
-    if (entry.index == log_.size()) {
-        log_.push_back(entry);
     }
 
     PrintRole();
@@ -455,6 +454,9 @@ bool RaftNode::InitWAL() {
     }
 
     std::cout << "[WAL] Initialized, current log size: " << log_.size() - 1 << " entries" << std::endl;
+    
+    // 先关闭文件 方便调试
+    wal_file_.close();
     return true;
 }
 

@@ -1,6 +1,5 @@
 #include "text_protocol.h"
 
-
 std::optional<Command> TextProtocol::Parse(const std::string& line) {
     if (line.empty()) {
         return std::nullopt;
@@ -20,7 +19,13 @@ std::optional<Command> TextProtocol::Parse(const std::string& line) {
     std::transform(cmd.name.begin(), cmd.name.end(), cmd.name.begin(), ::toupper);
 
     std::string arg;
-    while (iss >> arg) {
+    for (int i = 0 ; i < 5 && iss >> arg ; ++i) {
+        cmd.args.push_back(arg);
+    }
+    std::getline(iss, arg);
+    if (!arg.empty()) {
+        // 去掉前面的空格
+        arg.erase(0, arg.find_first_not_of(' '));
         cmd.args.push_back(arg);
     }
 
@@ -40,9 +45,13 @@ std::vector<std::string> TextProtocol::SplitArgs(const std::string &line) {
     std::vector<std::string> parts;
     std::istringstream iss(line);
     std::string part;
-    while (iss >> part) {
+    for (int i = 0 ; i < 5 ; ++i) {
+        iss >> part;
         parts.push_back(part);
     }
+    std::getline(iss, part);
+    parts.push_back(part);
+
     return parts;
 }
 
