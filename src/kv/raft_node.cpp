@@ -150,11 +150,6 @@ void RaftNode::LeaderLoop() {
             // 给每个 Follower 发送日志 (或心跳)
             for (const auto& [peer_id, client] : peer_clients_) {
                 if (!client->IsConnected()) { 
-                    // 尝试重连, 简单处理：每次循环尝试一次
-                    if (client->Connect(peers_[peer_id].ip, peers_[peer_id].port)) {
-                        // 重连成功，重置进度
-                        next_index_[peer_id] = GetLastLogIndex() + 1;
-                    }
                     continue;
                 }
                 
@@ -422,6 +417,8 @@ std::string RaftNode::HandleClientGet(const std::string& key) {
 
 // ========== Follower 处理 Leader 的 AppendEnties ==========
 std::string RaftNode::HandleAppendEntries(const Command& cmd) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     // 解析: APPEND <term> <leader_id> <prev_idx> <prev_term> <leader_commit> <entries...>
     if (cmd.args.size() < 5) {
         return TextProtocol::EncodeAppendResponse(current_term_, false);
@@ -433,47 +430,80 @@ std::string RaftNode::HandleAppendEntries(const Command& cmd) {
     uint64_t prev_term = std::stoull(cmd.args[3]);
     uint64_t leader_commit = std::stoull(cmd.args[4]);
 
-    // 检查 Term
+    // 1. 检查任期 Term，如果 Leader 任期过期，拒绝并返回当前任期
     if (term < current_term_) {
         return TextProtocol::EncodeAppendResponse(current_term_, false);
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    // 更新任期（如果 Leader 任期更高，说明我可能过时了，应该更新自己的任期）
+    if (term > current_term_) {
+        current_term_ = term;
+        // 因为我的 Leader 是固定的，所以不需要切换状态，但在更完整的实现中应该切换到 Follower 状态
+    }
+    
 
-    // 日志一致性检查: prev_idx 和 prev_term 必须匹配本地日志
+    // 2. 日志一致性检查: 验证 prev_idx 和 prev_term 是否匹配本地日志
     if (prev_idx > 0) {
+        // 情况 A: Leader 日志比本地长, 拒绝并表示需要更早的日志 (实际需要 Leader 的 next_index-- 处理)
         if (prev_idx >= log_.size()) {
-            // Leader 日志比本地长, 拒绝并表示需要更早的日志 (实际需要 Leader 的 next_index-- 处理)
+            PrintRole();
+            std::cout << "AppendEntries: prev_idx " << prev_idx << " out of bounds (log size: " << log_.size() << ")" << std::endl;
             return TextProtocol::EncodeAppendResponse(current_term_, false);
         }
+
+        // 情况 B: prev_idx 存在，但 term 不匹配, 拒绝并表示需要更早的日志 (实际需要 Leader 的 next_index-- 处理)
         if (log_[prev_idx].term != prev_term) {
+            PrintRole();
+            std::cout << "AppendEntries: prev_idx " << prev_idx << " term mismatch (expected " << prev_term << ", but got " << log_[prev_idx].term << ")" << std::endl;
             return TextProtocol::EncodeAppendResponse(current_term_, false);
         }
     }
 
-    // 截断冲突日志 (如果 prev_idx 之后有日志, 且 term 不一致)
-    // 简化: 如果 prev_idx 之后有日志，全部删除
-    if (log_.size() > prev_idx + 1) {
+    // 3. 截断冲突日志 (如果 prev_idx 之后有日志, 且 term 不一致)
+    // 简化: 如果 prev_idx 之后有日志，全部删除，Leader 是权威的
+    if (prev_idx + 1 < log_.size()) {
+        uint64_t truncate_from = prev_idx + 1;
+        PrintRole();
+        std::cout << "Truncating log from index " << truncate_from << " to " << log_.size() - 1 << std::endl;
         log_.resize(prev_idx + 1);
     }
 
-    // 追加新条目 (从 args[5] 开始)
-    LogEntry entry;
+    // 4. 追加新条目 (从 args[5] 开始)
     for (size_t i = 5 ; i < cmd.args.size() ; ++i) {
-        if (entry.Deserialize(cmd.args[i])) {
-            // 确保索引连接
-            if (entry.index == log_.size()) {
-                log_.push_back(entry);
-            }
+        LogEntry entry;
+        if (!entry.Deserialize(cmd.args[i])) {
+            continue;   // 跳过无法解析的条目
+        }
+        // 确保索引连接
+        if (entry.index != log_.size()) {
+            PrintRole();
+            std::cerr << "Log entry index mismatch: expected " << log_.size() << ", but got " << entry.index << std::endl;
+            // 简化处理，直接跳过
+            continue;
+        }
+
+        // 追加到日志
+        log_.push_back(entry);
+
+        // 写入 WAL
+        AppendToWAL(entry);
+
+        PrintRole();
+        std::cout << "Appended log[" << entry.index << "] term " << entry.term << ": " << entry.command << std::endl;
+    }
+
+    // 5. 更新 commit_index (Follower 的 commit 不能超过 Leader 告知的 commit_index)
+    if (leader_commit > commit_index_) {
+        uint64_t new_commit = std::min(leader_commit, GetLastLogIndex());
+        if (new_commit > commit_index_) {
+            commit_index_ = new_commit;
+            PrintRole();
+            std::cout << "CommitIndex advanced to " << commit_index_ << std::endl;
+            cv_.notify_all();
         }
     }
 
-    // 更新 commit_index (Follower 的 commit 不能超过 Leader 告知的 commit_index)
-    if (leader_commit > commit_index_) {
-        commit_index_ = std::min(leader_commit, GetLastLogIndex());
-        cv_.notify_all();
-    }
-
+    // 6. 返回成功响应
     return TextProtocol::EncodeAppendResponse(current_term_, true);
 }
 
@@ -493,8 +523,6 @@ bool RaftNode::InitWAL() {
 
     std::cout << "[WAL] Initialized, current log size: " << log_.size() - 1 << " entries" << std::endl;
     
-    // 先关闭文件 方便调试
-    wal_file_.close();
     return true;
 }
 
