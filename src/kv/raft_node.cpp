@@ -120,13 +120,15 @@ void RaftNode::ApplyLoop() {
 
         while (last_applied_ < commit_index_) {
             last_applied_++;
-            const auto& entry = log_[last_applied_];
-            lock.unlock();
+            if (last_applied_ < log_.size()) {
+                const auto& entry = log_[last_applied_];
+                lock.unlock();
 
-            // 应用到存储引擎
-            ApplyLogEntry(entry);
+                // 应用到存储引擎
+                ApplyLogEntry(entry);
 
-            lock.lock();
+                lock.lock();
+            }
         }
     }
 }
@@ -177,7 +179,7 @@ void RaftNode::LeaderLoop() {
 
         // 3. 更新心跳时间戳
         if (need_heartbeat) {
-            last_heartbeat = steady_clock::now();
+            last_heartbeat = now;
         }
 
         // 短暂休眠，避免紧密循环占用 CPU
@@ -208,7 +210,7 @@ void RaftNode::ReplicateLog(uint64_t peer_id, RpcClient* client, bool is_heartbe
         }
 
         // 计算 prev_idx 和 prev_term
-        prev_idx = next_idx - 1;
+        prev_idx = (next_idx > 0) ? next_idx - 1 : 0;
         prev_term = (prev_idx > 0 && prev_idx < log_.size()) ? log_[prev_idx].term : 0;
 
         // 准备要发送的日志条目 (从 next_idx 开始)
@@ -494,13 +496,8 @@ std::string RaftNode::HandleAppendEntries(const Command& cmd) {
 
     // 5. 更新 commit_index (Follower 的 commit 不能超过 Leader 告知的 commit_index)
     if (leader_commit > commit_index_) {
-        uint64_t new_commit = std::min(leader_commit, GetLastLogIndex());
-        if (new_commit > commit_index_) {
-            commit_index_ = new_commit;
-            PrintRole();
-            std::cout << "CommitIndex advanced to " << commit_index_ << std::endl;
-            cv_.notify_all();
-        }
+        commit_index_ = std::min(leader_commit, GetLastLogIndex());
+        cv_.notify_all();
     }
 
     // 6. 返回成功响应
@@ -568,11 +565,6 @@ void RaftNode::RestoreFromWAL() {
     }
 
     uint64_t max_index = 0;
-    uint64_t entry_count = 0;
-
-    // 清空当前日志 (保留占位符)
-    log_.clear();
-    log_.push_back({1, 0, ""}); // 空命令占位符
 
     while (file.tellg() < file_size) {
         uint64_t term, index;
@@ -591,36 +583,21 @@ void RaftNode::RestoreFromWAL() {
         std::string command(cmd_len, '\0');
         file.read(&command[0], cmd_len);
 
-        // 验证索引连续性：如果 index 不连续，说明 WAL 可能损坏，停止恢复
-        if (index != log_.size()) {
-            std::cerr << "[WAL] Warning: Index gap detected, expected " << log_.size()
-                << ", bug got " << index << std::endl;
-            
-            // 目前策略：继续（允许空洞）
-        }
-
         // 恢复到内存日志
         LogEntry entry{term, index, command};
         log_.push_back(entry);
         max_index = index;
-        entry_count++;
     }
 
-    // 恢复提交索引 (假设 WAL 中的日志都是已提交的)
-    commit_index_ = max_index;
+    if (max_index > 0) {
+        // 恢复提交索引 (假设 WAL 中的日志都是已提交的)
+        commit_index_ = max_index;
 
-    std::cout << "[WAL] Restored " << entry_count << " entries, last index: "
-        << max_index << ", commit_index restored to: " << commit_index_ << std::endl;
-    
-    file.close();
-}
-
-void RaftNode::MaybeFsync() {
-    std::lock_guard<std::mutex> lock(wal_mutex_);
-    if (wal_file_.is_open()) {
-        wal_file_.flush();
+        std::cout << "[WAL] Restored " << (log_.size() - 1) << " entries, last index: "
+            << max_index << std::endl;
     }
 }
+
 
 // ========== 工具函数 ==========
 uint64_t RaftNode::GetLastLogIndex() const {
