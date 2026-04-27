@@ -28,6 +28,7 @@ struct PeerInfo {
     std::string ip;
     uint16_t port;
 
+    PeerInfo() = default;
     PeerInfo(uint64_t id, std::string ip, uint16_t port) : id(id), ip(ip), port(port) {}
 };
 

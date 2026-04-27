@@ -7,40 +7,33 @@
 #include "rpc/text_protocol.h"
 
 RaftNode::RaftNode(uint64_t node_id, uint16_t port, const std::vector<PeerInfo>& peers)
-    : node_id_(node_id), port_(port), peers_(peers), rpc_server_(port),
-    quorum_size_(peers.size() / 2 + 1) {
+    : node_id_(node_id), port_(port), peers_(peers), rpc_server_(port) {
 
-    // 初始化日志 (占位符，使有效日志从 index 1 开始)
-    log_.push_back({1, 0, ""}); // term=1, index=0, 空命令
+    if (IsProxy()) {
+        std::cout << "[Node " << node_id_ << "] PROXY on port " << port_ << std::endl;
 
-    // 初始化 WAL (先恢复，再打开文件追加)
-    if (!InitWAL()) {
-        std::cerr << "Failed to initialize WAL, starting with empty state" << std::endl;
-    }
+        BuildShardMap();
 
-    if (IsLeader()) {
-        std::cout << "[Node " << node_id_ << "] Starting as LEADER (fixed " << LEADER_PORT << ")" << std::endl;
-        std::cout << "[Leader] Quorum size: " << quorum_size_ << " (need " << quorum_size_ << " acks to commit)" << std::endl;
-
-        // 初始化 Leader 状态: next_index 为 last + 1, match_index 为 0
-        uint64_t last_idx = GetLastLogIndex();
-        for (const auto& peer : peers) {
-            if (peer.port != LEADER_PORT) {
-                next_index_[peer.id] = last_idx + 1;
-                match_index_[peer.id] = 0;
-
-                // 建立到 Follower 的长连接
-                auto client = std::make_unique<RpcClient>();
-                if (client->Connect(peer.ip, peer.port)) {
-                    peer_clients_[peer.id] = std::move(client);
-                    std::cout << "[Leader] Connected to Follower " << peer.port << std::endl;
-                } else {
-                    std::cerr << "[Leader] Warning: Failed to connect to " << peer.port << std::endl;
-                }
+        // Proxy 建立到所有 DataNode 的连接
+        for (const auto& [shard_id, peer]: shard_map_) {
+            auto client = std::make_unique<RpcClient>();
+            PrintRole();
+            if (client->Connect(peer.ip, peer.port)) {
+                shard_clients_[shard_id] = std::move(client);
+                std::cout << "Connected to Shard " << shard_id << " at " << peer.ip << ":" << peer.port << std::endl;
+            } else {
+                std::cerr << "Warning: Failed to connect to Shard " << shard_id << std::endl;
             }
         }
+        
     } else {
-        std::cout << "[Node " << node_id_ << "] Starting as FOLLOWER (accepting from " << LEADER_PORT << ")" << std::endl;
+        std::cout << "[Node " << node_id_ << "] DATA NODE on port " << port_ << std::endl;
+        // DataNode 初始化日志和 WAL
+        log_.push_back({0, 0, ""});
+        if (!InitWAL()) {
+            PrintRole();
+            std::cerr << "WAL init failed" << std::endl;
+        }
     }
 }
 
@@ -48,6 +41,100 @@ RaftNode::~RaftNode() {
     Stop();
 }
 
+// ========== 分片路由实现 ==========
+void RaftNode::BuildShardMap() {
+    uint32_t shard_id = 0;
+    for (const auto& peer : peers_) {
+        if (peer.port == LEADER_PORT) continue;
+        shard_map_[shard_id] = peer;
+        shard_id++;
+    }
+    std::cout << "[Proxy] Built shard map: " << shard_map_.size()
+        << " shards (expect " << kShardCount << ")" << std::endl;
+}
+
+uint32_t RaftNode::GetShardId(const std::string& key) const {
+    return std::hash<std::string>{}(key) % kShardCount;
+}
+
+RpcClient* RaftNode::GetShardClient(uint32_t shard_id) {
+    auto it = shard_clients_.find(shard_id);
+    if (it == shard_clients_.end()) return nullptr;
+
+    if (!it->second->IsConnected()) {
+        // 尝试重连
+        auto peer_it = shard_map_.find(shard_id);
+        if (peer_it != shard_map_.end()) {
+            if (it->second->Connect(peer_it->second.ip, peer_it->second.port)) {
+                return it->second.get();
+            }
+        }
+        return nullptr;
+    }
+    return it->second.get();
+}
+
+std::string RaftNode::ForwardToShard(uint32_t shard_id, const std::string& cmd) {
+    auto* client = GetShardClient(shard_id);
+    if (!client) {
+        return TextProtocol::Err("SHARD_DOWN", "Shard " + std::to_string(shard_id) + " unavailable");
+    }
+
+    std::string data = cmd;
+
+    if (!EndsWith(data, "\r\n")) data += "\r\n";
+
+    std::string resp = client->Send(data, 3000);    // 3秒超时
+    if (resp.empty()) {
+        return TextProtocol::Err("TIMEOUT", "Shard " + std::to_string(shard_id) + " timeout");
+    }
+
+    return resp;
+}
+
+// ========== DataNode 应用线程（WAL 恢复到 Storage） ==========
+void RaftNode::ApplyLoop() {
+    while (running_) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [this]() {
+            return !running_ || last_applied_ < GetLastLogIndex();
+        });
+
+        while (last_applied_ < GetLastLogIndex()) {
+            last_applied_++;
+            if (last_applied_ < log_.size()) {
+                const auto& entry = log_[last_applied_];
+                lock.unlock();
+
+                // 应用到存储引擎
+                ApplyLogEntry(entry);
+
+                lock.lock();
+            }
+        }
+    }
+}
+
+
+void RaftNode::ApplyLogEntry(const LogEntry& entry) {
+    // 解析 command (格式: "PUT k v" 或 "DELETE k"
+    std::istringstream iss(entry.command);
+    std::string cmd, key, value;
+    iss >> cmd >> key >> value;
+    
+    PrintRole();
+    if (cmd == "PUT") {
+        storage_.Put(key, value);
+
+        std::cout << "Applied[" << entry.index << "]: PUT " << key << " = " << value << std::endl;
+    } else if (cmd == "DELETE") {
+        storage_.Delete(key);
+
+        std::cout << "Applied[" << entry.index << "]: DELETE " << key << std::endl;
+    }
+}
+
+// ========== 生命周期 ==========
 void RaftNode::Run() {
     // 绑定命令处理器
     auto handler = [this](const Command& cmd) -> std::string {
@@ -61,17 +148,15 @@ void RaftNode::Run() {
 
     running_ = true;
 
-    // 启动 ApplyLoop (所有节点)
-    apply_thread_ = std::thread(&RaftNode::ApplyLoop, this);
-
-    // Leader 启动复制循环
-    if (IsLeader()) {
-        leader_thread_ = std::thread(&RaftNode::LeaderLoop, this);
+    // 启动 ApplyLoop （DataNode）
+    if (IsDataNode()) {
+        apply_thread_ = std::thread(&RaftNode::ApplyLoop, this);
     }
 
     std::cout << "Node: " << node_id_ << " running at port " << port_
-        << " [Term: " << current_term_ << "]" << std::endl;
+        << " [" << (IsProxy() ? "Proxy" : "DataNode") << "]" << std::endl;
 
+    
     // 阻塞等待
     std::unique_lock<std::mutex> lock(mutex_);
     cv_.wait(lock, [this]() { return !running_; });
@@ -92,7 +177,6 @@ void RaftNode::Stop() {
 
     rpc_server_.Stop();
 
-    if (leader_thread_.joinable()) { leader_thread_.join(); }
     if (apply_thread_.joinable()) { apply_thread_.join(); }
 
     // 关闭 WAL
@@ -105,311 +189,93 @@ void RaftNode::Stop() {
         }
     }
 
-    for (auto& [id, client] : peer_clients_) {
+    for (auto& [id, client] : shard_clients_) {
         client->Close();
     }
 }
 
-// ========== 所有节点: 应用到状态机 ==========
-void RaftNode::ApplyLoop() {
-    while (running_) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this]() {
-            return !running_ || last_applied_ < commit_index_;
-        });
 
-        while (last_applied_ < commit_index_) {
-            last_applied_++;
-            if (last_applied_ < log_.size()) {
-                const auto& entry = log_[last_applied_];
-                lock.unlock();
-
-                // 应用到存储引擎
-                ApplyLogEntry(entry);
-
-                lock.lock();
-            }
-        }
-    }
-}
-
-// ========== Leader 核心循环: 心跳 + 日志复制 ==========
-void RaftNode::LeaderLoop() {
-    using namespace std::chrono;
-
-    auto last_heartbeat = steady_clock::now();
-    const auto heartbeat_interval = milliseconds(50); // 50ms 心跳间隔
-
-    while (running_) {
-        auto now = steady_clock::now();
-        bool need_heartbeat = (now - last_heartbeat) >= heartbeat_interval;
-
-        // 1. 收集需要复制的目标
-        std::vector<std::pair<uint64_t, RpcClient*>> targets;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-
-            // 给每个 Follower 发送日志 (或心跳)
-            for (const auto& [peer_id, client] : peer_clients_) {
-                if (!client->IsConnected()) { 
-                    continue;
-                }
-                
-                uint64_t next_idx = next_index_[peer_id];
-                uint64_t last_idx = GetLastLogIndex();
-                bool has_new_logs = (next_idx <= last_idx);
-
-                // 触发条件: 有新日志需要复制，或者需要定期发送心跳
-                if (has_new_logs || need_heartbeat) {
-                    targets.emplace_back(peer_id, client.get());
-                }
-            }
-            
-        }
-        
-        // 2. 发送日志复制请求 (在 LeaderLoop 外部执行，避免阻塞)
-        for (const auto& [peer_id, client] : targets) {
-            ReplicateLog(peer_id, client, need_heartbeat);
-        }
-        
-        // 检查是否可以提交新日志，只要有复制发生就检查
-        if (need_heartbeat) {
-            AdvanceCommitIndex();
-        }
-
-        // 3. 更新心跳时间戳
-        if (need_heartbeat) {
-            last_heartbeat = now;
-        }
-
-        // 短暂休眠，避免紧密循环占用 CPU
-        std::this_thread::sleep_for(milliseconds(10));
-    }
-}
-
-// ========== Leader 向单个 Follower 复制日志 ==========
-void RaftNode::ReplicateLog(uint64_t peer_id, RpcClient* client, bool is_heartbeat) {
-
-    // 1. 拷贝当前状态，减少持有锁的时间
-    uint64_t next_idx, prev_idx, prev_term, commit_idx;
-    std::vector<LogEntry> entries_to_send;
-    bool has_new_logs = false;
-
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        next_idx = next_index_[peer_id];
-        commit_idx = commit_index_;
-
-        uint64_t last_idx = GetLastLogIndex();
-        
-        has_new_logs = (next_idx <= last_idx);
-
-        // 如果是心跳但没有新日志，且不是强制心跳周期，可以跳过
-        if (!has_new_logs && !is_heartbeat) {
-            return;
-        }
-
-        // 计算 prev_idx 和 prev_term
-        prev_idx = (next_idx > 0) ? next_idx - 1 : 0;
-        prev_term = (prev_idx > 0 && prev_idx < log_.size()) ? log_[prev_idx].term : 0;
-
-        // 准备要发送的日志条目 (从 next_idx 开始)
-        if (has_new_logs && next_idx <= last_idx) {
-            // 发送最多 10 条日志，避免一次发送过多
-            for (uint64_t i = next_idx ; i <= last_idx && entries_to_send.size() < 10 ; ++i) {
-                entries_to_send.push_back(log_[i]);
-            }
-        }
-    }
-
-    // 2. 构造 AppendEntries RPC 请求
-    // APPEND 命令: APPEND <term> <leader_id> <prev_id> <prev_term> <commit_idx> [<entry>...]
-    // 条目格式: term,index,command
-    std::string cmd = "APPEND " + 
-        std::to_string(current_term_) + " " +
-        std::to_string(node_id_) + " " +
-        std::to_string(prev_idx) + " " +
-        std::to_string(prev_term) + " " +
-        std::to_string(commit_idx);
-
-    // 附加日志条目 (如果有的话)
-    for (const auto& entry : entries_to_send) {
-        cmd += " " + entry.Serialize();
-    }
-
-    // 3. 同步发送并等待响应 (在独立线程中调用，避免阻塞 LeaderLoop)
-    std::thread([this, peer_id, client, cmd, next_idx, entries_count = entries_to_send.size()]() {
-        std::string resp = client->Send(cmd, 1000); // 1秒超时
-
-        if (resp.empty()) {
-            // 超时或失败, 不更新进度, 下次重试
-            return;
-        }
-    
-        // 解析响应: APPEND_RESP <term> <success>
-        auto parts = TextProtocol::SplitArgs(resp);
-        if (parts.size() < 3 || parts[0] != "APPEND_RESP") {
-            PrintRole();
-            std::cerr << "Invalid APPEND_RESP format from " << peer_id << ": " << resp << std::endl;
-            return;
-        }
-
-        uint64_t resp_term = std::stoull(parts[1]);
-        bool success = (parts[2] == "true" || parts[2] == "+OK");
-            
-        std::lock_guard<std::mutex> lock(this->mutex_);
-
-        // 检查任期，如果响应的任期比当前大，说明 Leader 已过时，应该降级为 Follower
-        if (resp_term > this->current_term_) {
-            // 我的 Leader 是固定的，理论上这种情况不会发生，但为了健壮性，还是处理一下
-            PrintRole();
-            std::cout << "Received higher term " << resp_term << " from " << peer_id
-                << ", stepping down to Follower" << std::endl;
-            this->current_term_ = resp_term;
-            // 这里简化处理：直接停止 LeaderLoop，实际应该更细致地切换状态
-            this->running_ = false;
-            this->cv_.notify_all();
-            return;
-        }
-
-        if (success) {
-            // 成功, 更新 match_index 和 next_index
-            if (entries_count > 0) {
-                // 发送了 entries_count 条日志，从 next_idx 开始，成功复制到 next_idx + entries_count - 1
-                uint64_t new_match = next_idx + entries_count - 1;
-
-                this->match_index_[peer_id] = std::max(this->match_index_[peer_id], new_match);
-                this->next_index_[peer_id] = new_match + 1;
-            }
-            // 如果是心跳（没有新日志），也可以认为成功，保持 next_index 不变
-
-        } else {
-            // 失败 (日志不匹配): Raft 标准做法 Leader 递减 next_index 重试
-            if (this->next_index_[peer_id] > 1) {
-                this->next_index_[peer_id]--;
-                PrintRole();
-                std::cout << "Append failed for " << peer_id << ", decrementing next_index to " << this->next_index_[peer_id] << std::endl;
-            }
-        }
-    }).detach(); // 分离线程，异步处理响应
-}
-
-// ========== Leader 检查半数以上确认, 推进 CommitIndex ==========
-void RaftNode::AdvanceCommitIndex() {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    uint64_t last_idx = GetLastLogIndex();
-
-    // 从当前 commit_index + 1 开始检查，找到最大的可提交 N
-    for (uint64_t n = commit_index_ + 1 ; n <= last_idx ; ++n) {
-        // 只提交当前 Term 的日志
-        if (log_[n].term != current_term_) continue;
-
-        // 统计有多少节点 (包括 Leader 自己) 已经复制了日志 N
-        int ack_count = 1;      // Leader 自己
-        for (const auto& [peer_id, match_idx] : match_index_) {
-            if (match_idx >= n) { ack_count++; }
-        }
-
-        // 如果半数以上 (quorum), 则可以提交
-        if (ack_count >= static_cast<int>(quorum_size_)) {
-            if (n > commit_index_) {
-                commit_index_ = n;
-                cv_.notify_all();
-
-                PrintRole();
-                std::cout << "CommitIndex advanced to " << commit_index_
-                    << " (acked by " << ack_count << "/" << peers_.size() << ")" << std::endl;
-            }
-        } else {
-            break;      // 不满足多数派，停止检查更大的N
-        }
-    }
-}
-
-
-void RaftNode::ApplyLogEntry(const LogEntry& entry) {
-    // 解析 command (格式: "PUT k v" 或 "DELETE k"
-    std::istringstream iss(entry.command);
-    std::string cmd_type, key, value;
-    iss >> cmd_type >> key >> value;
-
-    if (cmd_type == "PUT") {
-        storage_.Put(key, value);
-
-        PrintRole();
-        std::cout << "Applied[" << entry.index << "]: PUT " << key << " = " << value << std::endl;
-
-    } else if (cmd_type == "DELETE") {
-        storage_.Delete(key);
-
-        PrintRole();
-        std::cout << "Applied[" << entry.index << "]: DELETE " << key << std::endl;
-
-    }
-}
-
-// ========== 命令处理 ==========
+// ========== 命令处理：Proxy 转发 或者 DataNode 本地处理 ==========
 std::string RaftNode::HandleCommand(const Command& cmd) {
-    
-    if (cmd.name == "PUT") {
-        if (cmd.args.size() < 2) {
-            return TextProtocol::Err("ARGS", "PUT <key> <value>");
+    if (IsProxy()) {
+        // Proxy 只负责转发，不存数据
+        if (cmd.name == "PUT") {
+            if (cmd.args.size() < 2) return TextProtocol::Err("ARGS", "PUT <key> <value>");
+            return ProxyPut(cmd.args[0], cmd.args[1]);
+        } else if (cmd.name == "GET") {
+            if (cmd.args.empty()) return TextProtocol::Err("ARGS", "GET <key>");
+            return ProxyGet(cmd.args[0]);
         }
-        return HandleClientPut(cmd.args[0], cmd.args[1]);
-
-    } else if (cmd.name == "GET") {
-        if (cmd.args.empty()) {
-            return TextProtocol::Err("ARGS", "GET <key>");
+        else if (cmd.name == "DELETE" || cmd.name == "DEL") {
+            if (cmd.args.empty()) return TextProtocol::Err("ARGS", "DELETE <key>");
+            return ProxyDelete(cmd.args[0]);
         }
-        return HandleClientGet(cmd.args[0]);
+    } else {
+        // DataNode: 直接处理本地存储请求；
+        if (cmd.name == "PUT") {
+            if (cmd.args.size() < 2) {
+                return TextProtocol::Err("ARGS", "PUT <key> <value>");
+            }
+            return DataNodePut(cmd.args[0], cmd.args[1]);
 
-    } else if (cmd.name == "DELETE" || cmd.name == "DEL") {
-        if (cmd.args.empty()) {
-            return TextProtocol::Err("ARGS", "DELETE <key>");
-        }
-        return HandleClientPut(cmd.args[0], "");   // DELETE 通过 PUT 空值表示删除
+        } else if (cmd.name == "GET") {
+            if (cmd.args.empty()) {
+                return TextProtocol::Err("ARGS", "GET <key>");
+            }
+            return DataNodeGet(cmd.args[0]);
 
-    } else if (cmd.name == "APPEND") {
-        return HandleAppendEntries(cmd);
+        } else if (cmd.name == "DELETE" || cmd.name == "DEL") {
+            if (cmd.args.empty()) {
+                return TextProtocol::Err("ARGS", "DELETE <key>");
+            }
+            return DataNodeDelete(cmd.args[0]);
+
+        } 
     }
     return TextProtocol::Err("UNKNOWN", cmd.name);
 }
 
-std::string RaftNode::HandleClientPut(const std::string& key, const std::string& value) {
-    if (!IsLeader()) {
-        return TextProtocol::Err("NOT_LEADER", GetLeaderAddr());
-    }
-
-    if (key.empty()) {
-        return TextProtocol::Err("ARGS", "Empty key");
-    }
-
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    // 构造日志条目
-    LogEntry entry;
-    entry.term = current_term_;
-    entry.index = GetLastLogIndex() + 1;
-    entry.command = value.empty() ? ("DELETE " + key) : ("PUT " + key + " " + value);
-
-    // 追加到 Leader 日志 (但未提交，需等待复制到多数派)
-    log_.push_back(entry);
-
-    // 写入 WAL
-    AppendToWAL(entry);
-
-    PrintRole();
-    std::cout << "New log[" << entry.index << "] at Term "
-        << entry.term << ": " << entry.command << std::endl;
-
-    // 注意：这里简化立即返回 OK，但数据实际还未提交（Raft 标准做法是异步等待或客户端轮询）
-    return TextProtocol::Ok(std::to_string(entry.index));
+// ========== Proxy 转发逻辑 ==========
+std::string RaftNode::ProxyPut(const std::string& key, const std::string& value) {
+    uint32_t shard = GetShardId(key);
+    std::string cmd = "PUT " + key + " " + value;
+    std::cout << "[Proxy] Forwarding PUT " << key << " -> Shard " << shard << std::endl;
+    return ForwardToShard(shard, cmd);
 }
 
-std::string RaftNode::HandleClientGet(const std::string& key) {
-    // 直接从状态机读取
-    // ApplyLoop 保证只有 commit_index 之前的才会应用
+std::string RaftNode::ProxyGet(const std::string& key) {
+    uint32_t shard = GetShardId(key);
+    std::string cmd = "GET " + key;
+    std::cout << "[Proxy] Forwarding GET " << key << " -> Shard " << shard << std::endl;
+    return ForwardToShard(shard, cmd);
+}
+
+std::string RaftNode::ProxyDelete(const std::string& key) {
+    uint32_t shard = GetShardId(key);
+    std::string cmd = "DELETE " + key;
+    std::cout << "[Proxy] Forwarding DELETE " << key << " -> Shard " << shard << std::endl;
+    return ForwardToShard(shard, cmd);
+}
+
+// ========== DataNode 本地处理逻辑 ==========
+std::string RaftNode::DataNodePut(const std::string& key, const std::string& value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    LogEntry entry;
+    entry.term = 1;     // 固定为 1，目前无实际意义
+    entry.index = GetLastLogIndex() + 1;
+    entry.command = "PUT " + key + " " + value;
+
+    log_.push_back(entry);
+    AppendToWAL(entry);
+    ApplyLogEntry(entry);
+
+    PrintRole();
+    std::cout << "Stored " << key << " " << value << std::endl;
+    return TextProtocol::Ok();
+}
+
+std::string RaftNode::DataNodeGet(const std::string& key) {
     auto val = storage_.Get(key);
     if (val.has_value()) {
         return TextProtocol::Ok(val.value());
@@ -417,94 +283,22 @@ std::string RaftNode::HandleClientGet(const std::string& key) {
     return TextProtocol::Err("NOT_FOUND", key);
 }
 
-// ========== Follower 处理 Leader 的 AppendEnties ==========
-std::string RaftNode::HandleAppendEntries(const Command& cmd) {
+std::string RaftNode::DataNodeDelete(const std::string& key) {
     std::lock_guard<std::mutex> lock(mutex_);
-
-    // 解析: APPEND <term> <leader_id> <prev_idx> <prev_term> <leader_commit> <entries...>
-    if (cmd.args.size() < 5) {
-        return TextProtocol::EncodeAppendResponse(current_term_, false);
-    }
-
-    uint64_t term = std::stoull(cmd.args[0]);
-    uint64_t leader_id = std::stoull(cmd.args[1]);
-    uint64_t prev_idx = std::stoull(cmd.args[2]);
-    uint64_t prev_term = std::stoull(cmd.args[3]);
-    uint64_t leader_commit = std::stoull(cmd.args[4]);
-
-    // 1. 检查任期 Term，如果 Leader 任期过期，拒绝并返回当前任期
-    if (term < current_term_) {
-        return TextProtocol::EncodeAppendResponse(current_term_, false);
-    }
-
-    // 更新任期（如果 Leader 任期更高，说明我可能过时了，应该更新自己的任期）
-    if (term > current_term_) {
-        current_term_ = term;
-        // 因为我的 Leader 是固定的，所以不需要切换状态，但在更完整的实现中应该切换到 Follower 状态
-    }
     
-
-    // 2. 日志一致性检查: 验证 prev_idx 和 prev_term 是否匹配本地日志
-    if (prev_idx > 0) {
-        // 情况 A: Leader 日志比本地长, 拒绝并表示需要更早的日志 (实际需要 Leader 的 next_index-- 处理)
-        if (prev_idx >= log_.size()) {
-            PrintRole();
-            std::cout << "AppendEntries: prev_idx " << prev_idx << " out of bounds (log size: " << log_.size() << ")" << std::endl;
-            return TextProtocol::EncodeAppendResponse(current_term_, false);
-        }
-
-        // 情况 B: prev_idx 存在，但 term 不匹配, 拒绝并表示需要更早的日志 (实际需要 Leader 的 next_index-- 处理)
-        if (log_[prev_idx].term != prev_term) {
-            PrintRole();
-            std::cout << "AppendEntries: prev_idx " << prev_idx << " term mismatch (expected " << prev_term << ", but got " << log_[prev_idx].term << ")" << std::endl;
-            return TextProtocol::EncodeAppendResponse(current_term_, false);
-        }
-    }
-
-    // 3. 截断冲突日志 (如果 prev_idx 之后有日志, 且 term 不一致)
-    // 简化: 如果 prev_idx 之后有日志，全部删除，Leader 是权威的
-    if (prev_idx + 1 < log_.size()) {
-        uint64_t truncate_from = prev_idx + 1;
-        PrintRole();
-        std::cout << "Truncating log from index " << truncate_from << " to " << log_.size() - 1 << std::endl;
-        log_.resize(prev_idx + 1);
-    }
-
-    // 4. 追加新条目 (从 args[5] 开始)
-    for (size_t i = 5 ; i < cmd.args.size() ; ++i) {
-        LogEntry entry;
-        if (!entry.Deserialize(cmd.args[i])) {
-            continue;   // 跳过无法解析的条目
-        }
-        // 确保索引连接
-        if (entry.index != log_.size()) {
-            PrintRole();
-            std::cerr << "Log entry index mismatch: expected " << log_.size() << ", but got " << entry.index << std::endl;
-            // 简化处理，直接跳过
-            continue;
-        }
-
-        // 追加到日志
-        log_.push_back(entry);
-
-        // 写入 WAL
-        AppendToWAL(entry);
-
-        PrintRole();
-        std::cout << "Appended log[" << entry.index << "] term " << entry.term << ": " << entry.command << std::endl;
-    }
-
-    // 5. 更新 commit_index (Follower 的 commit 不能超过 Leader 告知的 commit_index)
-    if (leader_commit > commit_index_) {
-        commit_index_ = std::min(leader_commit, GetLastLogIndex());
-        cv_.notify_all();
-    }
-
-    // 6. 返回成功响应
-    return TextProtocol::EncodeAppendResponse(current_term_, true);
+    LogEntry entry;
+    entry.term = 1;
+    entry.index = GetLastLogIndex() + 1;
+    entry.command = "DELETE " + key;
+    
+    log_.push_back(entry);
+    AppendToWAL(entry);
+    ApplyLogEntry(entry);
+    
+    return TextProtocol::Ok();
 }
 
-// ========== WAL 实现 ==========
+// ========== DataNode WAL 实现 ==========
 bool RaftNode::InitWAL() {
     wal_filename_ = "wal_" + std::to_string(node_id_) + ".log";
 
@@ -514,11 +308,13 @@ bool RaftNode::InitWAL() {
     // 以追加模式打开 (如果不存在则创建)
     wal_file_.open(wal_filename_, std::ios::binary | std::ios::app);
     if (!wal_file_.is_open()) {
-        std::cerr << "[WAL] Failed to open file: " << wal_filename_ << std::endl;
+        PrintRole();
+        std::cerr << "Failed to open file: " << wal_filename_ << std::endl;
         return false;
     }
 
-    std::cout << "[WAL] Initialized, current log size: " << log_.size() - 1 << " entries" << std::endl;
+    PrintRole();
+    std::cout << "WAL ready, restored " << log_.size() - 1 << " entries" << std::endl;
     
     return true;
 }
@@ -549,8 +345,9 @@ void RaftNode::AppendToWAL(const LogEntry& entry) {
 
 void RaftNode::RestoreFromWAL() {
     std::ifstream file(wal_filename_, std::ios::binary);
-    if (!file.is_open()) {
-        std::cout << "[WAL] No existing WAL file, starting fresh" << std::endl;
+    if (!file || !file.is_open()) {
+        PrintRole();
+        std::cout << "No existing WAL file, starting fresh" << std::endl;
         return;
     }
 
@@ -560,7 +357,8 @@ void RaftNode::RestoreFromWAL() {
     file.seekg(0, std::ios::beg);
 
     if (file_size == 0) {
-        std::cout << "[WAL] Empty WAL file" << std::endl;
+        PrintRole();
+        std::cout << "Empty WAL file" << std::endl;
         return;
     }
 
@@ -584,37 +382,30 @@ void RaftNode::RestoreFromWAL() {
         file.read(&command[0], cmd_len);
 
         // 恢复到内存日志
-        LogEntry entry{term, index, command};
-        log_.push_back(entry);
+        log_.push_back({term, index, command});
         max_index = index;
     }
 
     if (max_index > 0) {
-        // 恢复提交索引 (假设 WAL 中的日志都是已提交的)
-        commit_index_ = max_index;
-
-        std::cout << "[WAL] Restored " << (log_.size() - 1) << " entries, last index: "
-            << max_index << std::endl;
+        PrintRole();
+        std::cout << "Restored " << (log_.size() - 1) << " entries" << std::endl;
     }
 }
-
 
 // ========== 工具函数 ==========
 uint64_t RaftNode::GetLastLogIndex() const {
     return log_.empty() ? 0 : log_.size() - 1;
 }
 
-uint64_t RaftNode::GetLastLogTerm() const {
-    if (log_.size() <= 1) {
-        return 0;
+void RaftNode::PrintRole() const {
+    if (IsProxy()) {
+        std::cout << "[Proxy] ";
+    } else {
+        std::cout << "[DataNode " << port_ << "] ";
     }
-    return log_.back().term;
 }
 
-void RaftNode::PrintRole() const {
-    if (IsLeader()) {
-        std::cout << "[Leader] ";
-    } else {
-        std::cout << "[Follower " << port_ << "] ";
-    }
+bool RaftNode::EndsWith(const std::string& str, const std::string& suffix) {
+    if (str.size() < suffix.size()) return false;
+    return str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
