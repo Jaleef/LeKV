@@ -40,7 +40,7 @@ public:
     static std::vector<uint8_t> EncodeResponse(uint32_t req_id, uint8_t status, const std::string& value = "");
 
     // 编码路由查询响应（GET_ROUTE)
-    static std::vector<uint8_t> EncodeRouteResponse(uint32_t req_id, uint8_t status, uint8_t shard_id = 0, uint32_t epoch, const std::string& route);
+    static std::vector<uint8_t> EncodeRouteResponse(uint32_t req_id, uint8_t status, uint8_t shard_id, uint32_t epoch, const std::string& route);
 
     // 从接收缓冲区尝试解码一帧
     // consumed: 成功时返回消费的字节数；失败时返回 0（数据不足）或 1（Magic 错误需跳过）

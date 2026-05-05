@@ -111,3 +111,132 @@ void RpcServer::HandleClient(int fd) {
 
     close(fd);
 }
+
+
+BinaryRpcServer::BinaryRpcServer(uint16_t port) : port_(port) {}
+BinaryRpcServer::~BinaryRpcServer() { Stop(); }
+
+bool BinaryRpcServer::Start(BinaryHandler handler) {
+    handler_ = handler;
+    listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_fd_ < 0) return false;
+
+    int opt = 1;
+    setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port_);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(listen_fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        return false;
+    }
+    if (listen(listen_fd_, 10) < 0) {
+        return false;
+    }
+
+    running_ = true;
+    accept_thread_ = std::thread(&BinaryRpcServer::AcceptLoop, this);
+    return true;
+}
+
+void BinaryRpcServer::Stop() {
+    if (running_ == false) {
+        return;
+    }
+    running_ = false;
+    if (listen_fd_ >= 0) {
+        close(listen_fd_);
+        listen_fd_ = -1;
+    }
+    if (accept_thread_.joinable()) accept_thread_.join();
+
+}
+
+void BinaryRpcServer::AcceptLoop() {
+    while (running_) {
+        struct sockaddr_in client_addr;
+        socklen_t len = sizeof(client_addr);
+        int client_fd = accept(listen_fd_, (struct sockaddr*)&client_addr, &len);
+
+        if (client_fd < 0) {
+            if (running_) {
+                perror("accept");
+            }
+            continue;
+        }
+
+        std::thread(&BinaryRpcServer::HandleClient, this, client_fd).detach();
+    }
+}
+
+void BinaryRpcServer::HandleClient(int client_fd) {
+    // 用 RawClient 的 RecvFrame 逻辑，但是不持有连接
+    std::vector<uint8_t> buf;
+
+    auto RecvAll = [&](size_t need, int timeout_ms) -> bool {
+        while (buf.size() < need) {
+            char tmp[4096];
+            ssize_t n = ::recv(client_fd, tmp, sizeof(tmp), 0);
+            if (n > 0) {
+                buf.insert(buf.end(), tmp, tmp + n);
+            } else if (n == 0) {
+                return false;
+            } else {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    timeout_ms -= 10;
+                    if (timeout_ms <= 0) return false;
+                    continue;
+                }
+                return false;
+            }
+        }
+        return true;
+    };
+
+    while (running_) {
+        // 读帧头 4B
+        if (!RecvAll(4, 5000)) break;
+        uint32_t frame_len = ntohl(*reinterpret_cast<uint32_t*>(buf.data()));
+        if (frame_len < 10) break;  // 非法帧
+
+        // 读完整帧
+        if (!RecvAll(frame_len, 5000)) break;
+
+        std::vector<uint8_t> frame(buf.begin(), buf.begin() + frame_len);
+        buf.erase(buf.begin(), buf.begin() + frame_len);
+
+        // 解码
+        uint32_t req_id;
+        std::vector<uint8_t> payload;
+        size_t consumed;
+        if (!BinaryProtocol::TryDecode(frame, consumed, req_id, payload)) {
+            continue;
+        }
+
+        // 调用业务处理器
+        std::vector<uint8_t> resp_payload = handler_(req_id, payload);
+        if (resp_payload.empty()) {
+            resp_payload.push_back(BinaryProtocol::ST_BAD_REQUEST);
+        }
+
+        // 打包响应帧
+        auto resp_frame = BinaryProtocol::EncodeResponse(req_id, resp_payload[0], std::string(resp_payload.begin() + 1, resp_payload.end()));
+
+        // 发送
+        const uint8_t* p = resp_frame.data();
+        size_t left = resp_frame.size();
+        while (left > 0) {
+            ssize_t n = ::send(client_fd, p, left, 0);
+            if (n <= 0) break;
+            p +=  n;
+            left -= n;
+        }
+        if (left > 0) break;  // 发送失败，关闭连接
+    }
+
+    close(client_fd);
+}
