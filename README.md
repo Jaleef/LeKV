@@ -56,7 +56,7 @@ cd build/bin
 
 #### 响应报文（Proxy -> Client）PayLoad 结构
 
-[**1B** Status] [**1B** ShardID] [**4B** Epoch] [**ValueLen** RouteInfo]
+[**1B** Status] [**1B** ShardID] [**4B** Epoch]  [**2B** RouteLen] [**RouteLen** RouteInfo]
 
 - Status：返回状态
   - 0x00：**OK**，路由查询成功，客户端继续第二次 RTT
@@ -64,6 +64,7 @@ cd build/bin
   - 0x02：**ERR_KEY_INVALID**，Key 为空或超长（> 4KB）
 - ShardID：分片ID
 - Epoch：本地路由表版本号
+- RouteLen：分片地址的长度
 - RouteInfo：分片地址 ，字符串格式（UTF-8，无 `\r\n`）<IP>:<Port>
 
 ### 第二次 RTT：真实操作（GET / PUT / DELETE）
@@ -84,7 +85,7 @@ cd build/bin
 
 #### 响应报文（DataNode → Client）PayLoad 结构
 
-[**1B** Status] [**4B** ValueLen] [**ValueLen** value data] [**ValueLen** RouteInfo
+[**1B** Status] [**4B** ValueLen] [**ValueLen** value data]
 
 
 
