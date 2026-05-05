@@ -1,6 +1,7 @@
 # rpc/CMakeLists.txt
 add_library(rpc
     text_protocol.cpp
+    binary_protocol.cpp
     rpc_server.cpp
     rpc_client.cpp
 )
