@@ -32,32 +32,29 @@ private:
     static constexpr uint32_t kShardCount = 2;  // 目前 2 个 DataNode（9002，9003）
     void BuildShardMap();                       // 根据 peers 自动构建 shard_map_
     uint32_t GetShardId(const std::string& key) const;
-    RpcClient* GetShardClient(uint32_t shard_id);
-    std::string ForwardToShard(uint32_t shard_id, const std::string& cmd);
+    std::string HandleGetShard(const std::string& key);
+    std::string HandleShards();
+    // RpcClient* GetShardClient(uint32_t shard_id);
+    // std::string ForwardToShard(uint32_t shard_id, const std::string& cmd);
 
     // DataNode 本地存储
     void ApplyLoop();       // DataNode 用于 WAL 恢复到 Storage
     void ApplyLogEntry(const LogEntry& entry);
 
     // 命令路由
-    std::string HandleCommand(const Command& cmd);
-    std::string HandleClientPut(const std::string& key, const std::string& value);
-    std::string HandleClientGet(const std::string& key);
-    std::string HandleAppendEntries(const Command& cmd);        // Follower 处理
+    std::vector<uint8_t> HandleBinaryRequest(uint32_t req_id, const std::vector<uint8_t>& payload);
 
     // Proxy 转发逻辑
-    std::string ProxyPut(const std::string& key, const std::string& value);
-    std::string ProxyGet(const std::string& key);
-    std::string ProxyDelete(const std::string& key);
+    std::vector<uint8_t> HandleProxyGetRoute(uint32_t req_id, const std::vector<uint8_t>& payload);
+    std::vector<uint8_t> HandleProxyShards(uint32_t req_id);
 
     // DataNode 本地处理逻辑
-    std::string DataNodePut(const std::string& key, const std::string& value);
-    std::string DataNodeGet(const std::string& key);
-    std::string DataNodeDelete(const std::string& key);
+    std::vector<uint8_t> HandleDataNodePut(const std::vector<uint8_t>& payload);
+    std::vector<uint8_t> HandleDataNodeGet(const std::vector<uint8_t>& payload);
+    std::vector<uint8_t> HandleDataNodeDelete(const std::vector<uint8_t>& payload);
     
     // 工具函数
     uint64_t GetLastLogIndex() const;
-    bool EndsWith(const std::string& str, const std::string& suffix);
     std::string GetLeaderAddr() const { return "127.0.0.1:" + std::to_string(LEADER_PORT); }
     void PrintRole() const;
 
@@ -74,8 +71,9 @@ private:
 
     // Proxy 组件
     RpcServer rpc_server_;
+    std::unique_ptr<BinaryRpcServer> binary_server_;
     std::map<uint32_t, PeerInfo> shard_map_;
-    std::map<uint64_t, std::unique_ptr<RpcClient>> shard_clients_;
+    // std::map<uint64_t, std::unique_ptr<RpcClient>> shard_clients_;
     
     // DataNode 本地处理逻辑
     StorageEngine storage_;

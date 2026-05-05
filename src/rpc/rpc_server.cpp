@@ -223,8 +223,12 @@ void BinaryRpcServer::HandleClient(int client_fd) {
             resp_payload.push_back(BinaryProtocol::ST_BAD_REQUEST);
         }
 
+        // 提取状态码
+        uint8_t status = resp_payload[0];
+        std::string value(resp_payload.begin() + 1, resp_payload.end());
+
         // 打包响应帧
-        auto resp_frame = BinaryProtocol::EncodeResponse(req_id, resp_payload[0], std::string(resp_payload.begin() + 1, resp_payload.end()));
+        auto resp_frame = BinaryProtocol::EncodeResponse(req_id, status, value);
 
         // 发送
         const uint8_t* p = resp_frame.data();

@@ -14,18 +14,6 @@ RaftNode::RaftNode(uint64_t node_id, uint16_t port, const std::vector<PeerInfo>&
 
         BuildShardMap();
 
-        // Proxy 建立到所有 DataNode 的连接
-        for (const auto& [shard_id, peer]: shard_map_) {
-            auto client = std::make_unique<RpcClient>();
-            PrintRole();
-            if (client->Connect(peer.ip, peer.port)) {
-                shard_clients_[shard_id] = std::move(client);
-                std::cout << "Connected to Shard " << shard_id << " at " << peer.ip << ":" << peer.port << std::endl;
-            } else {
-                std::cerr << "Warning: Failed to connect to Shard " << shard_id << std::endl;
-            }
-        }
-        
     } else {
         std::cout << "[Node " << node_id_ << "] DATA NODE on port " << port_ << std::endl;
         // DataNode 初始化日志和 WAL
@@ -48,48 +36,34 @@ void RaftNode::BuildShardMap() {
         if (peer.port == LEADER_PORT) continue;
         shard_map_[shard_id] = peer;
         shard_id++;
+
+        PrintRole();
+        std::cout << "Shard " << shard_id << " -> " << peer.ip << ":" << peer.port << std::endl;
     }
-    std::cout << "[Proxy] Built shard map: " << shard_map_.size()
-        << " shards (expect " << kShardCount << ")" << std::endl;
 }
 
 uint32_t RaftNode::GetShardId(const std::string& key) const {
     return std::hash<std::string>{}(key) % kShardCount;
 }
 
-RpcClient* RaftNode::GetShardClient(uint32_t shard_id) {
-    auto it = shard_clients_.find(shard_id);
-    if (it == shard_clients_.end()) return nullptr;
-
-    if (!it->second->IsConnected()) {
-        // 尝试重连
-        auto peer_it = shard_map_.find(shard_id);
-        if (peer_it != shard_map_.end()) {
-            if (it->second->Connect(peer_it->second.ip, peer_it->second.port)) {
-                return it->second.get();
-            }
-        }
-        return nullptr;
+std::string RaftNode::HandleGetShard(const std::string& key) {
+    uint32_t shard = GetShardId(key);
+    auto it = shard_map_.find(shard);
+    if (it == shard_map_.end()) {
+        return TextProtocol::Err("NO_SHARD", "No shard for this key");
     }
-    return it->second.get();
+    return TextProtocol::Ok(std::to_string(shard) + " " + it->second.ip + " " + std::to_string(it->second.port));
 }
 
-std::string RaftNode::ForwardToShard(uint32_t shard_id, const std::string& cmd) {
-    auto* client = GetShardClient(shard_id);
-    if (!client) {
-        return TextProtocol::Err("SHARD_DOWN", "Shard " + std::to_string(shard_id) + " unavailable");
+std::string RaftNode::HandleShards() {
+    std::string result = std::to_string(shard_map_.size()) + " ";
+    bool first = true;
+    for (const auto& [shard_id, peer] : shard_map_) {
+        if (!first) result += " ";
+        result += std::to_string(shard_id) + ":" + peer.ip + ":" + std::to_string(peer.port);
+        first = false;
     }
-
-    std::string data = cmd;
-
-    if (!EndsWith(data, "\r\n")) data += "\r\n";
-
-    std::string resp = client->Send(data, 3000);    // 3秒超时
-    if (resp.empty()) {
-        return TextProtocol::Err("TIMEOUT", "Shard " + std::to_string(shard_id) + " timeout");
-    }
-
-    return resp;
+    return TextProtocol::Ok(result);
 }
 
 // ========== DataNode 应用线程（WAL 恢复到 Storage） ==========
@@ -136,12 +110,15 @@ void RaftNode::ApplyLogEntry(const LogEntry& entry) {
 
 // ========== 生命周期 ==========
 void RaftNode::Run() {
+    // 启动二进制 RPC 服务
+    binary_server_ = std::make_unique<BinaryRpcServer>(port_);
+
     // 绑定命令处理器
-    auto handler = [this](const Command& cmd) -> std::string {
-        return this->HandleCommand(cmd);
+    auto handler = [this](uint32_t req_id, const std::vector<uint8_t>& payload) -> std::vector<uint8_t> {
+        return this->HandleBinaryRequest(req_id, payload);
     };
 
-    if (!rpc_server_.Start(handler)) {
+    if (!binary_server_->Start(handler)) {
         std::cerr << "Failed to start server on port " << port_ << std::endl;
         return;
     }
@@ -181,84 +158,105 @@ void RaftNode::Stop() {
 
     // 关闭 WAL
     {
-        std::lock_guard<std::mutex> lock(wal_mutex_);
-        if (wal_file_.is_open()) {
+        if (IsDataNode() && wal_file_.is_open()) {
+            std::lock_guard<std::mutex> lock(wal_mutex_);
             wal_file_.flush();
             wal_file_.close();
             std::cout << "[WAL] Closed" << std::endl;
         }
     }
-
-    for (auto& [id, client] : shard_clients_) {
-        client->Close();
-    }
 }
 
 
 // ========== 命令处理：Proxy 转发 或者 DataNode 本地处理 ==========
-std::string RaftNode::HandleCommand(const Command& cmd) {
+std::vector<uint8_t> RaftNode::HandleBinaryRequest(uint32_t req_id, const std::vector<uint8_t>& payload) {
+    if (payload.empty()) {
+        return {BinaryProtocol::ST_BAD_REQUEST};
+    }
+
+    uint8_t opcode = payload[0];
+
     if (IsProxy()) {
         // Proxy 只负责转发，不存数据
-        if (cmd.name == "PUT") {
-            if (cmd.args.size() < 2) return TextProtocol::Err("ARGS", "PUT <key> <value>");
-            return ProxyPut(cmd.args[0], cmd.args[1]);
-        } else if (cmd.name == "GET") {
-            if (cmd.args.empty()) return TextProtocol::Err("ARGS", "GET <key>");
-            return ProxyGet(cmd.args[0]);
-        }
-        else if (cmd.name == "DELETE" || cmd.name == "DEL") {
-            if (cmd.args.empty()) return TextProtocol::Err("ARGS", "DELETE <key>");
-            return ProxyDelete(cmd.args[0]);
+        if (opcode == BinaryProtocol::OP_GET_ROUTE) {
+            return HandleProxyGetRoute(req_id, payload);
+        } else if (opcode == BinaryProtocol::OP_SHARDS) {
+            return HandleProxyShards(req_id);
+        } else {
+            // Proxy 不处理数据操作
+            return {BinaryProtocol::ST_BAD_REQUEST};
         }
     } else {
-        // DataNode: 直接处理本地存储请求；
-        if (cmd.name == "PUT") {
-            if (cmd.args.size() < 2) {
-                return TextProtocol::Err("ARGS", "PUT <key> <value>");
-            }
-            return DataNodePut(cmd.args[0], cmd.args[1]);
-
-        } else if (cmd.name == "GET") {
-            if (cmd.args.empty()) {
-                return TextProtocol::Err("ARGS", "GET <key>");
-            }
-            return DataNodeGet(cmd.args[0]);
-
-        } else if (cmd.name == "DELETE" || cmd.name == "DEL") {
-            if (cmd.args.empty()) {
-                return TextProtocol::Err("ARGS", "DELETE <key>");
-            }
-            return DataNodeDelete(cmd.args[0]);
-
-        } 
+        // DataNode 处理数据操作
+        if (opcode == BinaryProtocol::OP_PUT) {
+            return HandleDataNodePut(payload);
+        } else if (opcode == BinaryProtocol::OP_GET) {
+            return HandleDataNodeGet(payload);
+        } else if (opcode == BinaryProtocol::OP_DELETE) {
+            return HandleDataNodeDelete(payload);
+        } else {
+            return {BinaryProtocol::ST_BAD_REQUEST};
+        }
     }
-    return TextProtocol::Err("UNKNOWN", cmd.name);
 }
 
-// ========== Proxy 转发逻辑 ==========
-std::string RaftNode::ProxyPut(const std::string& key, const std::string& value) {
+// ========== Proxy 处理逻辑 ==========
+std::vector<uint8_t> RaftNode::HandleProxyGetRoute(uint32_t req_id, const std::vector<uint8_t>& payload) {
+    if (payload.size() < 3) {
+        // payload: [1B opcode][2B key_len][key_len bytes key]
+        // 至少有 3B
+        return {BinaryProtocol::ST_BAD_REQUEST};
+    }
+    uint16_t key_len = ntohs(*reinterpret_cast<const uint16_t*>(payload.data() + 1));
+    if (payload.size() < 3 + key_len) {
+        return {BinaryProtocol::ST_BAD_REQUEST};
+    }
+
+    std::string key(payload.begin() + 3, payload.begin() + 3 + key_len);
+
     uint32_t shard = GetShardId(key);
-    std::string cmd = "PUT " + key + " " + value;
-    std::cout << "[Proxy] Forwarding PUT " << key << " -> Shard " << shard << std::endl;
-    return ForwardToShard(shard, cmd);
+    auto it = shard_map_.find(shard);
+    if (it == shard_map_.end()) {
+        return {BinaryProtocol::ST_NO_SHARD};
+    }
+
+    std::string route = it->second.ip + ":" + std::to_string(it->second.port);
+    auto resp = BinaryProtocol::EncodeRouteResponse(req_id, BinaryProtocol::ST_OK, static_cast<uint8_t>(shard), 1, route);
+
+    // BinaryRpcServer 会自动打包帧头，这里只要返回payload 部分
+
+    std::vector<uint8_t> result{BinaryProtocol::ST_OK, static_cast<uint8_t>(shard)};
+    uint32_t ep = htonl(1);
+    result.insert(result.end(), reinterpret_cast<uint8_t*>(&ep), reinterpret_cast<uint8_t*>(&ep) + 4);
+    uint16_t rl = htons(route.size());
+    result.insert(result.end(), reinterpret_cast<uint8_t*>(&rl), reinterpret_cast<uint8_t*>(&rl) + 2);
+    result.insert(result.end(), route.begin(), route.end());
+    return result;
 }
 
-std::string RaftNode::ProxyGet(const std::string& key) {
-    uint32_t shard = GetShardId(key);
-    std::string cmd = "GET " + key;
-    std::cout << "[Proxy] Forwarding GET " << key << " -> Shard " << shard << std::endl;
-    return ForwardToShard(shard, cmd);
-}
-
-std::string RaftNode::ProxyDelete(const std::string& key) {
-    uint32_t shard = GetShardId(key);
-    std::string cmd = "DELETE " + key;
-    std::cout << "[Proxy] Forwarding DELETE " << key << " -> Shard " << shard << std::endl;
-    return ForwardToShard(shard, cmd);
+std::vector<uint8_t> RaftNode::HandleProxyShards(uint32_t req_id) {
+    std::string body = std::to_string(shard_map_.size()) + " ";
+    bool first = true;
+    for (const auto& [sid, peer] : shard_map_) {
+        if (!first) body += " ";
+        body += std::to_string(sid) + ":" + peer.ip + ":" + std::to_string(peer.port);
+        first = false;
+    }
+    std::vector<uint8_t> result = {BinaryProtocol::ST_OK};
+    result.insert(result.end(), body.begin(), body.end());
+    return result;
 }
 
 // ========== DataNode 本地处理逻辑 ==========
-std::string RaftNode::DataNodePut(const std::string& key, const std::string& value) {
+std::vector<uint8_t> RaftNode::HandleDataNodePut(const std::vector<uint8_t>& payload) {
+    if (payload.size() < 7) return {BinaryProtocol::ST_BAD_REQUEST};
+    uint16_t key_len = ntohs(*reinterpret_cast<const uint16_t*>(payload.data() + 1));
+    uint32_t val_len = ntohl(*reinterpret_cast<const uint32_t*>(payload.data() + 3));
+    if (payload.size() < 7 + key_len + val_len) return {BinaryProtocol::ST_BAD_REQUEST};
+
+    std::string key(payload.begin() + 7, payload.begin() + 7 + key_len);
+    std::string value(payload.begin() + 7 + key_len, payload.begin() + 7 + key_len + val_len);
+
     std::lock_guard<std::mutex> lock(mutex_);
 
     LogEntry entry;
@@ -272,18 +270,37 @@ std::string RaftNode::DataNodePut(const std::string& key, const std::string& val
 
     PrintRole();
     std::cout << "Stored " << key << " " << value << std::endl;
-    return TextProtocol::Ok();
+    return {BinaryProtocol::ST_OK};
 }
 
-std::string RaftNode::DataNodeGet(const std::string& key) {
+std::vector<uint8_t> RaftNode::HandleDataNodeGet(const std::vector<uint8_t>& payload) {
+    if (payload.size() < 7) return {BinaryProtocol::ST_BAD_REQUEST};
+    uint16_t key_len = ntohs(*reinterpret_cast<const uint16_t*>(payload.data() + 1));
+    uint32_t val_len = ntohl(*reinterpret_cast<const uint32_t*>(payload.data() + 3));
+    if (val_len != 0) return {BinaryProtocol::ST_BAD_REQUEST};
+
+    std::string key(payload.begin() + 7, payload.begin() + 7 + key_len);
     auto val = storage_.Get(key);
     if (val.has_value()) {
-        return TextProtocol::Ok(val.value());
+        std::vector<uint8_t> result = {BinaryProtocol::ST_OK};
+        uint32_t vl = htonl(val.value().size());
+        result.insert(result.end(), reinterpret_cast<uint8_t*>(&vl), reinterpret_cast<uint8_t*>(&vl) + 4);
+        result.insert(result.end(), val.value().begin(), val.value().end());
+        return result;
+    } else {
+        return {BinaryProtocol::ST_NOT_FOUND};
     }
-    return TextProtocol::Err("NOT_FOUND", key);
 }
 
-std::string RaftNode::DataNodeDelete(const std::string& key) {
+std::vector<uint8_t> RaftNode::HandleDataNodeDelete(const std::vector<uint8_t>& payload) {
+    if (payload.size() < 7) return {BinaryProtocol::ST_BAD_REQUEST};
+    uint16_t key_len = ntohs(*reinterpret_cast<const uint16_t*>(payload.data() + 1));
+    uint32_t val_len = ntohl(*reinterpret_cast<const uint32_t*>(payload.data() + 3));
+    if (val_len != 0) return {BinaryProtocol::ST_BAD_REQUEST};
+    if (payload.size() < 7 + key_len) return {BinaryProtocol::ST_BAD_REQUEST};
+
+    std::string key(payload.begin() + 7, payload.begin() + 7 + key_len);
+
     std::lock_guard<std::mutex> lock(mutex_);
     
     LogEntry entry;
@@ -295,7 +312,7 @@ std::string RaftNode::DataNodeDelete(const std::string& key) {
     AppendToWAL(entry);
     ApplyLogEntry(entry);
     
-    return TextProtocol::Ok();
+    return {BinaryProtocol::ST_OK};
 }
 
 // ========== DataNode WAL 实现 ==========
@@ -403,9 +420,4 @@ void RaftNode::PrintRole() const {
     } else {
         std::cout << "[DataNode " << port_ << "] ";
     }
-}
-
-bool RaftNode::EndsWith(const std::string& str, const std::string& suffix) {
-    if (str.size() < suffix.size()) return false;
-    return str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
