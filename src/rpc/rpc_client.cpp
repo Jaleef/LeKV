@@ -130,6 +130,25 @@ void RpcClient::Close() {
     }
 }
 
+bool BinaryRpcClient::Connect(const std::string& ip, uint16_t port) {
+    Close();
+    fd_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd_ < 0) { return false; }
+
+    
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
+    
+    struct timeval tv{5, 0};
+    setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    return ::connect(fd_, (struct sockaddr*)&addr, sizeof(addr)) == 0;
+}
+
 bool BinaryRpcClient::Send(const std::vector<uint8_t>& data) {
     if (fd_ < 0) return false;
     const uint8_t* p = data.data();

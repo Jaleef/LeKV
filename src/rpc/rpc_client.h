@@ -38,6 +38,9 @@ public:
     BinaryRpcClient() = default;
     ~BinaryRpcClient() { Close(); }
     
+    // 连接到指定节点
+    bool Connect(const std::string& ip, uint16_t port);
+
     // 发送原始字节
     bool Send(const std::vector<uint8_t>& data);
 

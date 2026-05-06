@@ -10,3 +10,9 @@ target_link_libraries(lekv
     PRIVATE
     raftnode
 )
+
+add_executable(lekv_cli lekv_cli.cpp)
+target_link_libraries(lekv_cli
+    PRIVATE
+    rpc
+)
