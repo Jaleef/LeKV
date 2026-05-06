@@ -113,7 +113,8 @@ void RpcServer::HandleClient(int fd) {
 }
 
 
-BinaryRpcServer::BinaryRpcServer(uint16_t port) : port_(port) {}
+BinaryRpcServer::BinaryRpcServer(uint16_t port): RpcServer(port), port_(port) {}
+
 BinaryRpcServer::~BinaryRpcServer() { Stop(); }
 
 bool BinaryRpcServer::Start(BinaryHandler handler) {
@@ -142,18 +143,6 @@ bool BinaryRpcServer::Start(BinaryHandler handler) {
     return true;
 }
 
-void BinaryRpcServer::Stop() {
-    if (running_ == false) {
-        return;
-    }
-    running_ = false;
-    if (listen_fd_ >= 0) {
-        close(listen_fd_);
-        listen_fd_ = -1;
-    }
-    if (accept_thread_.joinable()) accept_thread_.join();
-
-}
 
 void BinaryRpcServer::AcceptLoop() {
     while (running_) {
@@ -164,6 +153,9 @@ void BinaryRpcServer::AcceptLoop() {
         if (client_fd < 0) {
             if (running_) {
                 perror("accept");
+            } else {
+                // 服务器正在停止，accept被中断，直接退出循环
+                break;
             }
             continue;
         }

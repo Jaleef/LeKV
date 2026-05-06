@@ -36,13 +36,12 @@ private:
 
 using BinaryHandler = std::function<std::vector<uint8_t>(uint32_t req_id, const std::vector<uint8_t>& payload)>;
 
-class BinaryRpcServer {
+class BinaryRpcServer: public RpcServer {
 public:
     explicit BinaryRpcServer(uint16_t port);
     ~BinaryRpcServer();
 
     bool Start(BinaryHandler handler);
-    void Stop();
 
 private:
     void AcceptLoop();
