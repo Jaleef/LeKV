@@ -20,10 +20,11 @@ public:
     ~RpcServer();
 
     bool Start(Handler handler);
-
+    
     void Stop();
 
-private:
+protected:
+    bool ServerStart();
     void AcceptLoop();
     void HandleClient(int client_fd);
 
@@ -43,14 +44,9 @@ public:
 
     bool Start(BinaryHandler handler);
 
-private:
-    void AcceptLoop();
+protected:
     void HandleClient(int client_fd);
 
-    uint16_t port_;
-    int listen_fd_ = -1;
-    std::atomic<bool> running_{false};
-    std::thread accept_thread_;
     BinaryHandler handler_;
 };
 

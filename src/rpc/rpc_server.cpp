@@ -11,33 +11,38 @@
 RpcServer::RpcServer(uint16_t port): port_(port) {}
 RpcServer::~RpcServer() { Stop(); }
 
-bool RpcServer::Start(Handler handler) {
-    handler_ = handler;
-
+bool RpcServer::ServerStart() {
     listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) return false;
-
+    
     int opt = 1;
     setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
+    
     sockaddr_in addr{};
+    memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port_);
     addr.sin_addr.s_addr = INADDR_ANY;
-
+    
     if (bind(listen_fd_, (sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("bind");
         return false;
     }
-
-    if (listen(listen_fd_, 5) < 0) {
+    
+    if (listen(listen_fd_, 10) < 0) {
         return false;
     }
-
+    
     running_ = true;
     std::cout << "RPC Server listening on port " << port_ << std::endl;
     accept_thread_ = std::thread(&RpcServer::AcceptLoop, this);
     return true;
+}
+
+bool RpcServer::Start(Handler handler) {
+    handler_ = handler;
+
+    return ServerStart();
 }
 
 void RpcServer::Stop() {
@@ -113,56 +118,15 @@ void RpcServer::HandleClient(int fd) {
 }
 
 
-BinaryRpcServer::BinaryRpcServer(uint16_t port): RpcServer(port), port_(port) {}
-
+BinaryRpcServer::BinaryRpcServer(uint16_t port): RpcServer(port) {}
 BinaryRpcServer::~BinaryRpcServer() { Stop(); }
 
 bool BinaryRpcServer::Start(BinaryHandler handler) {
     handler_ = handler;
-    listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_fd_ < 0) return false;
 
-    int opt = 1;
-    setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port_);
-    addr.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(listen_fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        return false;
-    }
-    if (listen(listen_fd_, 10) < 0) {
-        return false;
-    }
-
-    running_ = true;
-    accept_thread_ = std::thread(&BinaryRpcServer::AcceptLoop, this);
-    return true;
+    return ServerStart();
 }
 
-
-void BinaryRpcServer::AcceptLoop() {
-    while (running_) {
-        struct sockaddr_in client_addr;
-        socklen_t len = sizeof(client_addr);
-        int client_fd = accept(listen_fd_, (struct sockaddr*)&client_addr, &len);
-
-        if (client_fd < 0) {
-            if (running_) {
-                perror("accept");
-            } else {
-                // 服务器正在停止，accept被中断，直接退出循环
-                break;
-            }
-            continue;
-        }
-
-        std::thread(&BinaryRpcServer::HandleClient, this, client_fd).detach();
-    }
-}
 
 void BinaryRpcServer::HandleClient(int client_fd) {
     // 用 RawClient 的 RecvFrame 逻辑，但是不持有连接
