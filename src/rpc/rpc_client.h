@@ -30,10 +30,11 @@ public:
 
 private:
     int fd_ = -1;
+
 };
 
-// RawClient 原始二进制 socket 
-class BinaryRpcClient: public RpcClient {
+// Client 原始二进制 socket 
+class BinaryRpcClient {
 public:
     BinaryRpcClient() = default;
     ~BinaryRpcClient() { Close(); }
@@ -47,14 +48,20 @@ public:
     // 接收一帧（先读 4B FrameLen，再读剩余）
     bool RecvFrame(std::vector<uint8_t>& frame, int timeout_ms = 5000);
 
+    bool IsConnected() const { return fd_ >= 0; }
+
     // 暴露fd
     void AttachFd(int fd) { Close(); fd_ = fd; }
+
+    void Close();
 
 private:
     // 确保缓冲区有 total_needed 字节
     bool RecvAll(size_t total_needed, int timeout_ms);
 
     int fd_ = -1;
+
     std::vector<uint8_t> buf_;  // 接收缓冲区
+
 };
 #endif //  RPC_CLIENT_H_

@@ -130,6 +130,13 @@ void RpcClient::Close() {
     }
 }
 
+void BinaryRpcClient::Close() {
+    if (fd_ >= 0) {
+        ::close(fd_);
+        fd_ = -1;
+    }
+}
+
 bool BinaryRpcClient::Connect(const std::string& ip, uint16_t port) {
     Close();
     fd_ = socket(AF_INET, SOCK_STREAM, 0);
