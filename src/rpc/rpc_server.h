@@ -8,30 +8,53 @@
 #include <functional>
 #include <atomic>
 #include <thread>
+#include <mutex>
 
 using namespace lekv;
 
-class RpcServer
-{
+class RpcServer {
 public:
-    using Handler = std::function<std::string(const Command& cmd)>;
-
     explicit RpcServer(uint16_t port);
-    ~RpcServer();
 
-    bool Start(Handler handler);
-    
+    // 使用虚析构函数确保派生类的资源能够正确释放
+    virtual ~RpcServer();
+
     void Stop();
 
 protected:
     bool ServerStart();
     void AcceptLoop();
-    void HandleClient(int client_fd);
 
+    // 强制子类实现
+    virtual void HandleClient(int client_fd) = 0;
+
+protected:
     uint16_t port_;
-    int listen_fd_ = 1;
+    int listen_fd_ = -1;
     std::atomic<bool> running_{false};
     std::thread accept_thread_;
+
+    //管理所有工作线程
+    std::vector<std::thread> worker_threads_;
+    
+    // 防止并发加入线程
+    std::mutex worker_mutex_;
+};
+
+using Handler = std::function<std::string(const Command& cmd)>;
+
+class TextRpcServer: public RpcServer {
+    public:
+    explicit TextRpcServer(uint16_t port);
+    
+    ~TextRpcServer() override = default;
+    
+    bool Start(Handler handler);
+    
+    protected:
+    void HandleClient(int client_fd) override;
+    
+    private:
     Handler handler_;
 };
 
@@ -40,14 +63,14 @@ using BinaryHandler = std::function<std::vector<uint8_t>(uint32_t req_id, const 
 class BinaryRpcServer: public RpcServer {
 public:
     explicit BinaryRpcServer(uint16_t port);
-    ~BinaryRpcServer();
+    ~BinaryRpcServer() override = default;
 
     bool Start(BinaryHandler handler);
 
 protected:
-    void HandleClient(int client_fd);
+    void HandleClient(int client_fd) override;
 
-    BinaryHandler handler_;
+    BinaryHandler binary_handler_;
 };
 
 #endif // RPC_SERVER_H_

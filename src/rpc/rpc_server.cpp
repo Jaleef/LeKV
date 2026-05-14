@@ -34,15 +34,8 @@ bool RpcServer::ServerStart() {
     }
     
     running_ = true;
-    std::cout << "RPC Server listening on port " << port_ << std::endl;
     accept_thread_ = std::thread(&RpcServer::AcceptLoop, this);
     return true;
-}
-
-bool RpcServer::Start(Handler handler) {
-    handler_ = handler;
-
-    return ServerStart();
 }
 
 void RpcServer::Stop() {
@@ -63,6 +56,14 @@ void RpcServer::Stop() {
         // 阻塞线程，等待被调用的线程对象关联的线程执行完毕
         accept_thread_.join();
     }
+
+    for (auto& t : worker_threads_) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+
+    worker_threads_.clear();
 }
 
 void RpcServer::AcceptLoop() {
@@ -78,15 +79,22 @@ void RpcServer::AcceptLoop() {
 
             continue;
         }
-
-        // 单机版简单处理，每个连接一个线程
-        std::thread([this, client_fd]() {
-            HandleClient(client_fd);
-        }).detach();
+        {
+            std::lock_guard<std::mutex> lock(worker_mutex_);
+            worker_threads_.emplace_back(&RpcServer::HandleClient, this, client_fd);
+        }
     }
 }
 
-void RpcServer::HandleClient(int fd) {
+TextRpcServer::TextRpcServer(uint16_t port): RpcServer(port) {}
+
+bool TextRpcServer::Start(Handler handler) {
+    handler_ = std::move(handler);
+
+    return ServerStart();
+}
+
+void TextRpcServer::HandleClient(int fd) {
     char buf[1024];
     std::string line_buf;
 
@@ -119,10 +127,9 @@ void RpcServer::HandleClient(int fd) {
 
 
 BinaryRpcServer::BinaryRpcServer(uint16_t port): RpcServer(port) {}
-BinaryRpcServer::~BinaryRpcServer() { Stop(); }
 
 bool BinaryRpcServer::Start(BinaryHandler handler) {
-    handler_ = handler;
+    binary_handler_ = std::move(handler);
 
     return ServerStart();
 }
@@ -174,7 +181,7 @@ void BinaryRpcServer::HandleClient(int client_fd) {
         }
 
         // 调用业务处理器
-        std::vector<uint8_t> resp_payload = handler_(req_id, payload);
+        std::vector<uint8_t> resp_payload = binary_handler_(req_id, payload);
         if (resp_payload.empty()) {
             resp_payload.push_back(BinaryProtocol::ST_BAD_REQUEST);
         }
