@@ -51,6 +51,16 @@ void RpcServer::Stop() {
         close(listen_fd_);
         listen_fd_ = -1;
     }
+
+    {
+        std::lock_guard<std::mutex> lock(client_mutex_);
+        for (int fd : client_fds_) {
+            shutdown(fd, SHUT_RDWR);
+            close(fd);
+        }
+        client_fds_.clear();
+    }
+    
     // 判断线程对象是否代表一个可等待的执行线程
     if (accept_thread_.joinable()) {
         // 阻塞线程，等待被调用的线程对象关联的线程执行完毕
@@ -78,6 +88,10 @@ void RpcServer::AcceptLoop() {
             } 
 
             continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            client_fds_.push_back(client_fd);
         }
         {
             std::lock_guard<std::mutex> lock(worker_mutex_);
@@ -206,4 +220,11 @@ void BinaryRpcServer::HandleClient(int client_fd) {
     }
 
     close(client_fd);
+    {
+        std::lock_guard<std::mutex> lock(client_mutex_);
+        auto it = find(client_fds_.begin(), client_fds_.end(), client_fd);
+        if (it != client_fds_.end()) {
+            client_fds_.erase(it);
+        }
+    }
 }
