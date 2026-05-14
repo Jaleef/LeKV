@@ -155,7 +155,6 @@ bool LekvCli::DoGetRoute(const std::string& key, uint8_t& shard_id,
 
     uint32_t rid = NextReqId();
     auto req = BinaryProtocol::EncodeGetRoute(rid, key);
-    if (!proxy_conn_.Send(req)) return false;
 
     uint32_t resp_req_id;
     std::vector<uint8_t> payload;
@@ -209,12 +208,6 @@ bool LekvCli::DoDataNodeRequest(const std::string& addr, uint8_t opcode,
 
     uint32_t rid = NextReqId();
     auto req = BinaryProtocol::EncodeRequest(rid, opcode, key, value);
-    if (!dn.Send(req)) {
-        status = BinaryProtocol::ST_TIMEOUT;
-        result = "Send failed";
-        dn.Close();
-        return false;
-    }
 
     uint32_t resp_req_id;
     std::vector<uint8_t> payload;
