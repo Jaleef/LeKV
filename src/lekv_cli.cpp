@@ -91,8 +91,10 @@ bool LekvCli::Init(const std::string& proxy_addr) {
         return false;
     }
 
+    uint32_t route_len = ntohl(*reinterpret_cast<uint32_t*>(payload.data() + 1));
+
     // 解析路由表 "2 0:127.0.1:9002 1:127.0.1:9003"
-    std::string body(payload.begin() + 1, payload.end());
+    std::string body(payload.begin() + 5, payload.end());
     std::istringstream iss(body);
     iss >> shard_count_;
     std::string segment;
