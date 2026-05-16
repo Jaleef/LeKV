@@ -24,7 +24,6 @@ bool StorageEngine::Delete(const std::string& key) {
     return true;
 }
 
-std::map<std::string, std::string> StorageEngine::GetAll() {
-    std::lock_guard<std::mutex> lock(mutex_);
+const std::unordered_map<std::string, std::string>& StorageEngine::GetAll() const {
     return data_;
 }
