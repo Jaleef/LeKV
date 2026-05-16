@@ -23,3 +23,8 @@ bool StorageEngine::Delete(const std::string& key) {
     data_.erase(key);
     return true;
 }
+
+std::map<std::string, std::string> StorageEngine::GetAll() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return data_;
+}

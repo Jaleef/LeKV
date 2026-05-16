@@ -97,6 +97,24 @@ std::vector<uint8_t> BinaryProtocol::EncodeResponse(uint32_t req_id, uint8_t sta
     return buf;
 }
 
+std::vector<uint8_t> BinaryProtocol::EncodeCustomRequest(uint32_t req_id, const std::vector<uint8_t>& payload) {
+    uint32_t payload_len = static_cast<uint32_t>(payload.size());
+    uint32_t frame_len = 10 + payload_len;
+
+    std::vector<uint8_t> buf;
+    buf.reserve(frame_len);
+
+    uint32_t fl = htonl(frame_len);
+    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&fl), reinterpret_cast<uint8_t*>(&fl) + 4);
+    buf.push_back(MAGIC);
+    buf.push_back(VERSION);
+    uint32_t rid = htonl(req_id);
+    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&rid), reinterpret_cast<uint8_t*>(&rid) + 4);
+
+    buf.insert(buf.end(), payload.begin(), payload.end());
+    return buf;
+}
+
 bool BinaryProtocol::TryDecode(const std::vector<uint8_t>& buf, size_t& consumed, uint32_t& out_req_id, std::vector<uint8_t>& out_payload) {
     consumed = 0;
     if (buf.size() < 10) return false;

@@ -2,7 +2,7 @@
 #define STORAGE_ENGINE_H_
 
 #include <string>
-#include <unordered_map>
+#include <map>
 #include <mutex>
 #include <optional>
 
@@ -20,8 +20,11 @@ public:
     std::optional<std::string> Get(const std::string& key);
     bool Delete(const std::string& key);
 
+    // 暴露数据
+    std::map<std::string, std::string> GetAll();
+
 private:
-    std::unordered_map<std::string, std::string> data_;
+    std::map<std::string, std::string> data_;
 
     std::mutex mutex_;
 };

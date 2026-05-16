@@ -37,4 +37,14 @@ enum RaftState {
     Follower,
     Candidate,
 };
+
+// Tablet 定义
+struct Tablet {
+    uint64_t id;
+    std::string start_key;  // 起始键（包含）
+    std::string end_key;    // 结束键（不包含）
+    uint32_t node_id;       // 负责该 Tablet 的节点 ID;
+    uint64_t key_count;     // Tablet 中的键值对数量，用于负载均衡和迁移决策
+};
+
 #endif //LEKV_RAFT_TYPES_H
