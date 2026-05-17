@@ -75,7 +75,7 @@ cd build/bin
 
 #### 响应帧
 
-[**1B** Status] [**1B** TabletID] [**4B** Epoch]  [**2B** RouteLen] [**RouteLen** RouteInfo]
+[**1B** Status] [**4B** ValueLen] [**1B** TabletID] [**4B** Epoch]  [**2B** RouteLen] [**RouteLen** RouteInfo]
 
 - Status：返回状态
   - 0x00：**OK**，路由查询成功，客户端继续第二次 RTT
@@ -122,28 +122,15 @@ cd build/bin
 
 
 
-### TABLET_STATS 请求
-
-#### 请求帧
-
-[**1B** Opcode = 0x07] [**2B** StartLen] [**StartLen B** start] [**2B** EndLen] [**EndLen B**  end] 
-
-#### 响应帧
-
-[**1B** Status] [**4B** KeyCount] [**2B** MedianLen] [Median]
-
-
-
 ### 帧类型表
 
-| 方向 | 帧类型        | 首字节 (Payload) |
-| ---- | ------------- | ---------------- |
-| C→P  | GET\_ROUTE    | `0x01`           |
-| C→P  | SHARDS        | `0x06`           |
-| C→D  | PUT           | `0x03`           |
-| C→D  | GET           | `0x02`           |
-| C→D  | DELETE        | `0x04`           |
-| P→D  | TABLET\_STATS | `0x07`           |
+| 方向 | 帧类型     | 首字节 (Payload) |
+| ---- | ---------- | ---------------- |
+| C→P  | GET\_ROUTE | `0x01`           |
+| C→P  | SHARDS     | `0x06`           |
+| C→D  | PUT        | `0x03`           |
+| C→D  | GET        | `0x02`           |
+| C→D  | DELETE     | `0x04`           |
 
 
 
