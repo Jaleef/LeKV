@@ -33,6 +33,8 @@ private:
     size_t FindTabletIndex(const std::string& key) const;  // 二分查找 Tablet 索引
     bool GetTabletRoute(const std::string& key, Tablet& out) const;
     void BuildInitialTablets();  // 根据 DataNode 数量创建初始区间
+    bool DataNodeGetTabletStats(const std::string& start, const std::string& end,
+                                uint64_t& key_count, std::string& median_key);
 
     // ========== 命令路由 ==========
     std::vector<uint8_t> HandleBinaryRequest(uint32_t req_id, const std::vector<uint8_t>& payload);
@@ -45,6 +47,7 @@ private:
     std::vector<uint8_t> HandleDataNodePut(const std::vector<uint8_t>& payload);
     std::vector<uint8_t> HandleDataNodeGet(const std::vector<uint8_t>& payload);
     std::vector<uint8_t> HandleDataNodeDelete(const std::vector<uint8_t>& payload);
+    std::vector<uint8_t> HandleDataNodeTabletStats(const std::vector<uint8_t>& payload);
     
     // 工具函数
     void PrintRole() const;
@@ -60,7 +63,7 @@ private:
     std::map<uint32_t, std::unique_ptr<BinaryRpcClient>> node_clients_;
     
     // ========== DataNode 组件 ==========
-    StorageEngine storage_;
+    std::unique_ptr<StorageEngine> storage_;
 
     // 线程控制
     std::atomic<bool> running_{false};

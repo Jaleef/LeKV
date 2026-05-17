@@ -23,6 +23,14 @@ RaftNode::RaftNode(uint64_t node_id, uint16_t port, const std::vector<PeerInfo>&
         BuildInitialTablets();
     } else {
         std::cout << "[Node " << node_id_ << "] DATA NODE on port " << port_ << std::endl;
+
+        std::string db_path = "db_" + std::to_string(node_id_);
+        try {
+            storage_ = std::make_unique<StorageEngine>(db_path);
+            std::cout << "[DataNode " << port_ << "] LevelDB opened at " << db_path << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[DataNode " << port_ << "] Failed to open LevelDB: " << e.what() << std::endl;
+        }
     }
 }
 
@@ -45,6 +53,8 @@ void RaftNode::Stop() {
     if (binary_server_) { binary_server_->Stop(); }
 
     for (auto& [id, c] : node_clients_) { c->Close(); }
+
+    storage_.reset();  // 关闭 LevelDB，释放资源
 }
 
 // ========== 节点地址查询 ==========
@@ -106,6 +116,17 @@ bool RaftNode::GetTabletRoute(const std::string& key, Tablet& out) const {
     return true;
 }
 
+// ========== DataNode 统计（LevelDB RangeStats）==========
+bool RaftNode::DataNodeGetTabletStats(const std::string& start, const std::string& end,
+                                      uint64_t& key_count, std::string& median_key) {
+    if (!storage_) {
+        key_count = 0;
+        median_key.clear();
+        return false;
+    }
+    return storage_->RangeStats(start, end, key_count, median_key);
+}
+
 // ========== 命令处理：Proxy 转发 或者 DataNode 本地处理 ==========
 std::vector<uint8_t> RaftNode::HandleBinaryRequest(uint32_t req_id, const std::vector<uint8_t>& payload) {
     if (payload.empty()) {
@@ -123,6 +144,7 @@ std::vector<uint8_t> RaftNode::HandleBinaryRequest(uint32_t req_id, const std::v
         if (opcode == BinaryProtocol::OP_PUT) { return HandleDataNodePut(payload); }
         if (opcode == BinaryProtocol::OP_GET) { return HandleDataNodeGet(payload); } 
         if (opcode == BinaryProtocol::OP_DELETE) { return HandleDataNodeDelete(payload); }
+        if (opcode == BinaryProtocol::OP_TABLET_STATS) { return HandleDataNodeTabletStats(payload); }
     }
 
     return {BinaryProtocol::ST_BAD_REQUEST};
@@ -180,7 +202,9 @@ std::vector<uint8_t> RaftNode::HandleDataNodePut(const std::vector<uint8_t>& pay
     std::string key(payload.begin() + 7, payload.begin() + 7 + key_len);
     std::string value(payload.begin() + 7 + key_len, payload.begin() + 7 + key_len + val_len);
 
-    storage_.Put(key, value);
+    if (!storage_ || !storage_->Put(key, value)) {
+        return {BinaryProtocol::ST_TIMEOUT};
+    }
     PrintRole();
     std::cout << "PUT " << key << " " << value << std::endl;
     
@@ -195,7 +219,10 @@ std::vector<uint8_t> RaftNode::HandleDataNodeGet(const std::vector<uint8_t>& pay
     if (val_len != 0) return {BinaryProtocol::ST_BAD_REQUEST};
 
     std::string key(payload.begin() + 7, payload.begin() + 7 + key_len);
-    auto val = storage_.Get(key);
+    
+    if (!storage_) { return {BinaryProtocol::ST_TIMEOUT}; }
+
+    auto val = storage_->Get(key);
     if (val.has_value()) {
         std::vector<uint8_t> result = {BinaryProtocol::ST_OK};
         result.insert(result.end(), val.value().begin(), val.value().end());
@@ -213,11 +240,40 @@ std::vector<uint8_t> RaftNode::HandleDataNodeDelete(const std::vector<uint8_t>& 
     if (payload.size() < 7 + key_len) return {BinaryProtocol::ST_BAD_REQUEST};
 
     std::string key(payload.begin() + 7, payload.begin() + 7 + key_len);
-    storage_.Delete(key);
+    
+    if (!storage_ || !storage_->Delete(key)) {
+        return {BinaryProtocol::ST_TIMEOUT};
+    }
+
     PrintRole();
     std::cout << "DELETE " << key << std::endl;
     
     std::vector<uint8_t> result = {BinaryProtocol::ST_OK};
+    return result;
+}
+
+std::vector<uint8_t> RaftNode::HandleDataNodeTabletStats(const std::vector<uint8_t>& payload) {
+    if (payload.size() < 5) return {BinaryProtocol::ST_BAD_REQUEST};
+
+    uint16_t sl = ntohs(*reinterpret_cast<const uint16_t*>(payload.data() + 1));
+    if (payload.size() < 1 + 2 + sl + 2) return {BinaryProtocol::ST_BAD_REQUEST};
+    std::string start(payload.begin() + 3, payload.begin() + 3 + sl);
+
+    uint16_t el = ntohs(*reinterpret_cast<const uint16_t*>(payload.data() + 3 + sl));
+    if (payload.size() < 1 + 2 + sl + 2 + el) return {BinaryProtocol::ST_BAD_REQUEST};
+    std::string end(payload.begin() + 3 + sl + 2, payload.begin() + 3 + sl + 2 + el);
+
+    uint64_t key_count = 0;
+    std::string median_key;
+    DataNodeGetTabletStats(start, end, key_count, median_key);
+
+    // [1B Status][4B val_len][4B key_count][2B median_len][median_key]
+    std::vector<uint8_t> result{BinaryProtocol::ST_OK};
+    uint32_t kc = htonl(static_cast<uint32_t>(key_count));
+    result.insert(result.end(), reinterpret_cast<uint8_t*>(&kc), reinterpret_cast<uint8_t*>(&kc) + 4);
+    uint16_t ml = htons(static_cast<uint16_t>(median_key.size()));
+    result.insert(result.end(), reinterpret_cast<uint8_t*>(&ml), reinterpret_cast<uint8_t*>(&ml) + 2);
+    result.insert(result.end(), median_key.begin(), median_key.end());
     return result;
 }
 
