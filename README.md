@@ -1,5 +1,31 @@
 # 分布式键值存储系统的研究与实现
 
+## 目录结构
+
+- README.md
+- CMakeLists.txt
+- src
+  - lekv.cpp 节点的运行入口
+  - lekv_cli.cpp 客户端代码
+  - CMakeLists.txt
+  - storage 存储引擎层
+    - storage_engine.h/cpp
+    - CMakeLists.txt
+  - rpc 通信层
+    - binary_protocol.h/cpp 二进制通信协议定义
+    - text_protocol.h/cpp 文本通信协议定义
+    - rpc_client.h/cpp 发送端
+    - rpc_server.h/cpp 接收端
+    - CMakeLists.txt
+  - kv 节点运行层
+    - raft_types.h 数据结构定义
+    - raft_node.h/cpp 节点的运行逻辑代码
+    - CMakeLists.txt
+
+
+
+
+
 ## 运行方式
 **目前的运行一定要 Follower 节点先运行**
 
@@ -18,7 +44,7 @@ cd build/bin
 ./lekv
 ```
 系统就运行起来了
-使用 telnet 工具进行交互
+使用 lekv_cli 客户端程序进行交互
 
 
 
@@ -38,7 +64,7 @@ cd build/bin
 
 
 
-### 第一次 RTT：路由查询（GET_ROUTE）
+### 路由查询（GET_ROUTE）
 
 #### 请求帧
 
@@ -74,7 +100,7 @@ cd build/bin
 
 
 
-### 第二次 RTT：真实操作（GET / PUT / DELETE）
+### KV操作（GET / PUT / DELETE）
 
 #### 请求帧
 
