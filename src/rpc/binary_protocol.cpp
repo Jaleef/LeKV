@@ -67,6 +67,8 @@ std::vector<uint8_t> BinaryProtocol::EncodeResponse(uint32_t req_id, uint8_t sta
     buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&rid), reinterpret_cast<uint8_t*>(&rid) + 4);
 
     buf.push_back(status);
+    uint32_t vl = htonl(val_len);
+    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&vl), reinterpret_cast<uint8_t*>(&vl) + 4);
     buf.insert(buf.end(), value.begin(), value.end());
     return buf;
 }

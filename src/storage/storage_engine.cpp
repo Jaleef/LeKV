@@ -12,7 +12,7 @@ std::optional<std::string> StorageEngine::Get(const std::string& key) {
     auto it = data_.find(key);
 
     if (it != data_.end()) {
-        return it->second;
+        return std::optional(it->second);
     }
     
     return std::nullopt;
@@ -22,8 +22,4 @@ bool StorageEngine::Delete(const std::string& key) {
     std::lock_guard<std::mutex> lock(mutex_);
     data_.erase(key);
     return true;
-}
-
-const std::unordered_map<std::string, std::string>& StorageEngine::GetAll() const {
-    return data_;
 }
