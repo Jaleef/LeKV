@@ -20,6 +20,9 @@ public:
     std::optional<std::string> Get(const std::string& key);
     bool Delete(const std::string& key);
 
+    // 暴露数据
+    const std::unordered_map<std::string, std::string>& GetAll() const;
+
 private:
     std::unordered_map<std::string, std::string> data_;
 

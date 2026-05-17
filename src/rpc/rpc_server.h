@@ -39,6 +39,12 @@ protected:
     
     // 防止并发加入线程
     std::mutex worker_mutex_;
+
+    // 管理所有socket连接
+    std::vector<int> client_fds_;
+
+    // 防止并发修改client_fds_
+    std::mutex client_mutex_;
 };
 
 using Handler = std::function<std::string(const Command& cmd)>;

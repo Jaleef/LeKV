@@ -23,3 +23,7 @@ bool StorageEngine::Delete(const std::string& key) {
     data_.erase(key);
     return true;
 }
+
+const std::unordered_map<std::string, std::string>& StorageEngine::GetAll() const {
+    return data_;
+}
