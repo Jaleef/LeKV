@@ -22,7 +22,6 @@ RaftNode::RaftNode(uint64_t node_id, uint16_t port, const std::vector<PeerInfo>&
             }
         }
         InitTablets();
-        BuildShardMap();
 
     } else {
         std::cout << "[Node " << node_id_ << "] DATA NODE on port " << port_ << std::endl;
@@ -213,6 +212,38 @@ void RaftNode::BuildInitialTablets() {
     SaveMeta();
 }
 
+void RaftNode::SyncAllTabletStats() {
+    std::unique_lock<std::shared_mutex> lock(tablet_mutex_);
+    if (tablets_.empty()) return;
+    
+    std::cout << "[Sync] Syncing tablet stats..." << std::endl;
+    bool changed = false;
+    for (auto& t : tablets_) {
+        // 拷贝参数，临时释放锁做 RPC（避免阻塞客户端路由查询）
+        uint32_t node_id = t.node_id;
+        std::string start = t.start_key;
+        std::string end = t.end_key;
+        
+        lock.unlock();
+        uint64_t key_count = 0;
+        std::string median_key;
+        bool ok = QueryTabletStats(node_id, start, end, key_count, median_key);
+        lock.lock();
+        
+        if (ok && key_count != t.key_count) {
+            t.key_count = key_count;
+            changed = true;
+            std::cout << "[Sync] Tablet " << t.id 
+                      << " [" << t.start_key << "," << t.end_key 
+                      << ") key_count=" << key_count << std::endl;
+        }
+    }
+    
+    if (changed) {
+        SaveMeta();  // 把真实值写回磁盘，重启后不再失真
+    }
+}
+
 void RaftNode::InitTablets() {
     LoadMeta();
     if (tablets_.empty()) {
@@ -221,6 +252,8 @@ void RaftNode::InitTablets() {
         std::cout << "[Proxy] Loaded " << tablets_.size()
                   << " tablets, epoch=" << epoch_ << std::endl;
     }
+
+    SyncAllTabletStats();  // 启动时同步一次
 }
 
 // ========== 自动分裂与负载均衡 ==========
@@ -290,6 +323,15 @@ bool RaftNode::TrySplitTablet(size_t idx) {
     if (median_key.empty() || median_key <= t.start_key) { return false; }
     if (!t.end_key.empty() && median_key >= t.end_key) { return false; }
 
+    // 分裂前，分别查询两个新区的真实数量（更精确）
+    uint64_t count_a = 0, count_b = 0;
+    std::string med_a, med_b;
+    
+    lock.unlock();
+    QueryTabletStats(t.node_id, t.start_key, median_key, count_a, med_a);
+    QueryTabletStats(t.node_id, median_key, t.end_key, count_b, med_b);
+    lock.lock();
+
     // 执行分裂
     Tablet new_a = t;
     Tablet new_b = t;
@@ -299,8 +341,8 @@ bool RaftNode::TrySplitTablet(size_t idx) {
     new_a.end_key = median_key;
     new_b.start_key = median_key;
 
-    new_a.key_count = key_count / 2;  // 这里简单假设分裂后两边的 key_count 大致相等
-    new_b.key_count = key_count - new_a.key_count;
+    new_a.key_count = count_a;
+    new_b.key_count = count_b;
 
     // 替换
     tablets_[idx] = new_a;
@@ -365,8 +407,11 @@ bool RaftNode::DoLoadBalance() {
 void RaftNode::BalancerLoop() {
     using namespace std::chrono;
     while (balancer_running_) {
-        std::this_thread::sleep_for(seconds(30));  // 每 30 秒检查一次
+        std::this_thread::sleep_for(seconds(5));  // 每 5 秒检查一次
         if (!balancer_running_) { break; }
+
+        // 每次调度前，先同步真实数据量
+        SyncAllTabletStats();
 
         // 1. 尝试分裂过大的 Tablet
         {
@@ -456,21 +501,6 @@ void RaftNode::ApplyLogEntry(const LogEntry& entry) {
     }
 }
 
-
-// ========== 分片路由实现 ==========
-void RaftNode::BuildShardMap() {
-    uint32_t shard_id = 0;
-    for (const auto& peer : peers_) {
-        if (peer.port == LEADER_PORT) continue;
-        shard_map_[shard_id] = peer;
-        shard_id++;
-
-        PrintRole();
-        std::cout << "Shard " << shard_id << " -> " << peer.ip << ":" << peer.port << std::endl;
-    }
-}
-
-
 // ========== 命令处理：Proxy 转发 或者 DataNode 本地处理 ==========
 std::vector<uint8_t> RaftNode::HandleBinaryRequest(uint32_t req_id, const std::vector<uint8_t>& payload) {
     if (payload.empty()) {
@@ -520,17 +550,6 @@ std::vector<uint8_t> RaftNode::HandleProxyGetRoute(uint32_t req_id, const std::v
         return {BinaryProtocol::ST_NO_SHARD};
     }
 
-    // 更新访问计数（用于分裂决策，近似值）
-    {
-        std::unique_lock<std::shared_mutex> lock(tablet_mutex_);
-        for (auto& tablet : tablets_) {
-            if (tablet.id == t.id) {
-                tablet.key_count++;
-                break;
-            }
-        }
-    }
-
     std::string addr = GetNodeAddr(t.node_id);
     // 返回：Status(1) + ShardId(1) + Epoch(4) + RouteLen(2) + Route
     std::vector<uint8_t> result;
@@ -552,10 +571,12 @@ std::vector<uint8_t> RaftNode::HandleProxyShards(uint32_t req_id) {
     bool first = true;
     for (const auto& t : tablets_) {
         if (!first) body += " ";
-        body += std::to_string(t.id) + ":" + GetNodeAddr(t.node_id);
+        body += std::to_string(t.id) + ":" + t.start_key + ":" + t.end_key + ":" + GetNodeAddr(t.node_id);
         first = false;
     }
     std::vector<uint8_t> result = {BinaryProtocol::ST_OK};
+    uint32_t bl = htonl(static_cast<uint32_t>(body.size()));
+    result.insert(result.end(), reinterpret_cast<uint8_t*>(&bl), reinterpret_cast<uint8_t*>(&bl) + 4);
     result.insert(result.end(), body.begin(), body.end());
     return result;
 }
@@ -582,7 +603,11 @@ std::vector<uint8_t> RaftNode::HandleDataNodePut(const std::vector<uint8_t>& pay
 
     PrintRole();
     std::cout << "Stored " << key << " " << value << std::endl;
-    return {BinaryProtocol::ST_OK};
+    
+    std::vector<uint8_t> result = {BinaryProtocol::ST_OK};
+    uint32_t vl = htonl(0);
+    result.insert(result.end(), reinterpret_cast<uint8_t*>(&vl), reinterpret_cast<uint8_t*>(&vl) + 4);
+    return result;
 }
 
 std::vector<uint8_t> RaftNode::HandleDataNodeGet(const std::vector<uint8_t>& payload) {
@@ -624,7 +649,10 @@ std::vector<uint8_t> RaftNode::HandleDataNodeDelete(const std::vector<uint8_t>& 
     AppendToWAL(entry);
     ApplyLogEntry(entry);
     
-    return {BinaryProtocol::ST_OK};
+    std::vector<uint8_t> result = {BinaryProtocol::ST_OK};
+    uint32_t vl = htonl(0);
+    result.insert(result.end(), reinterpret_cast<uint8_t*>(&vl), reinterpret_cast<uint8_t*>(&vl) + 4);
+    return result;
 }
 
 std::vector<uint8_t> RaftNode::HandleDataNodeTabletStats(const std::vector<uint8_t>& payload) {

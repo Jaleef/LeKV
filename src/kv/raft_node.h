@@ -53,19 +53,12 @@ private:
     bool QueryTabletStats(uint32_t node_id, const std::string& start,
                           const std::string& end, uint64_t& key_count,
                           std::string& median_key);     // 向 DataNode 查询 Tablet 统计信息
+    void SyncAllTabletStats();                        // 同步所有 Tablet 统计信息（分裂和负载均衡前调用）
 
     std::thread balancer_thread_;
     std::atomic<bool> balancer_running_{false};
     static constexpr uint64_t SPLIT_THRESHOLD = 10;     // 测试阈值：10 条记录后尝试分裂
     static constexpr double BALANCE_RATIO = 1.2;        // 负载均衡触发比率：1.2 倍
-
-
-    // 分片路由（Proxy专用）
-    static constexpr uint32_t kShardCount = 2;  // 目前 2 个 DataNode（9002，9003）
-    void BuildShardMap();                       // 根据 peers 自动构建 shard_map_
-    uint32_t GetShardId(const std::string& key) const;
-    std::string HandleGetShard(const std::string& key);
-    std::vector<uint8_t> HandleProxyShards();
 
     // ========== DataNode 本地存储 ==========
     void ApplyLoop();       // DataNode 用于 WAL 恢复到 Storage

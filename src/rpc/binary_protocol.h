@@ -40,9 +40,6 @@ public:
     // 编码通用响应帧
     static std::vector<uint8_t> EncodeResponse(uint32_t req_id, uint8_t status, const std::string& value = "");
 
-    // 编码路由查询响应（GET_ROUTE)
-    static std::vector<uint8_t> EncodeRouteResponse(uint32_t req_id, uint8_t status, uint8_t shard_id, uint32_t epoch, const std::string& route);
-
     // 编码自定义 payload 的请求帧
     static std::vector<uint8_t> EncodeCustomRequest(uint32_t req_id, const std::vector<uint8_t>& payload);
     

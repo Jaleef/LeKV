@@ -24,30 +24,6 @@ std::vector<uint8_t> BinaryProtocol::EncodeGetRoute(uint32_t req_id, const std::
     return buf;
 }
 
-std::vector<uint8_t> BinaryProtocol::EncodeRouteResponse(uint32_t req_id, uint8_t status, uint8_t shard_id, uint32_t epoch, const std::string& route) {
-    uint16_t route_len = static_cast<uint16_t>(route.size());
-    uint32_t payload_len = 1 + 1 + 4 + 2 + route_len;
-    uint32_t frame_len = 10 + payload_len;
-
-    std::vector<uint8_t> buf;
-    buf.reserve(frame_len);
-
-    uint32_t fl = htonl(frame_len);
-    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&fl), reinterpret_cast<uint8_t*>(&fl) + 4);
-    buf.push_back(MAGIC);
-    buf.push_back(VERSION);
-    uint32_t rid = htonl(req_id);
-    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&rid), reinterpret_cast<uint8_t*>(&rid) + 4);
-
-    buf.push_back(status);
-    buf.push_back(shard_id);
-    uint32_t ep = htonl(epoch);
-    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&ep), reinterpret_cast<uint8_t*>(&ep) + 4);
-    uint16_t rl = htons(route_len);
-    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&rl), reinterpret_cast<uint8_t*>(&rl) + 2);
-    buf.insert(buf.end(), route.begin(), route.end());
-    return buf;
-}
 
 std::vector<uint8_t> BinaryProtocol::EncodeRequest(uint32_t req_id, uint8_t opcode, const std::string& key, const std::string& value) {
     uint16_t key_len = static_cast<uint16_t>(key.size());
@@ -91,8 +67,6 @@ std::vector<uint8_t> BinaryProtocol::EncodeResponse(uint32_t req_id, uint8_t sta
     buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&rid), reinterpret_cast<uint8_t*>(&rid) + 4);
 
     buf.push_back(status);
-    uint32_t vl = htonl(val_len);
-    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&vl), reinterpret_cast<uint8_t*>(&vl) + 4);
     buf.insert(buf.end(), value.begin(), value.end());
     return buf;
 }

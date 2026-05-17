@@ -70,8 +70,56 @@ bool LekvCli::Init(const std::string& proxy_addr) {
 }
 
 bool LekvCli::RefreshTablets() {
+    if (!proxy_conn_.IsConnected()) {
+        if (!proxy_conn_.Connect(proxy_ip_, proxy_port_)) { return false; }
+    }
+
+    uint32_t rid = NextReqId();
+    auto req = BinaryProtocol::EncodeRequest(rid, BinaryProtocol::OP_SHARDS, "");
+
+    uint32_t resp_req_id;
+    std::vector<uint8_t> payload;
+    if (!SendAndRecv(proxy_conn_, req, resp_req_id, payload)) {
+        proxy_conn_.Close();
+        if (!proxy_conn_.Connect(proxy_ip_, proxy_port_)) { return false; }
+        if (!SendAndRecv(proxy_conn_, req, resp_req_id, payload)) { return false; }
+    }
+
+    if (resp_req_id != rid || payload.empty() || payload[0] != BinaryProtocol::ST_OK) { return false; }
+
+    // 解析 body: "2 1001::m:127.0.0.1:9002 1002:m::127.0.0.1:9003"
+    std::string body(payload.begin() + 5, payload.end());
+    std::istringstream iss(body);
+    size_t count;
+    iss >> count;
     
-    return true;
+    local_tablets_.clear();
+    std::string segment;
+    while (iss >> segment) {
+        std::vector<std::string> parts;
+        size_t pos = 0;
+        while (true) {
+            size_t c = segment.find(':', pos);
+            if (c == std::string::npos) {
+                parts.push_back(segment.substr(pos));
+                break;
+            }
+            parts.push_back(segment.substr(pos, c - pos));
+            pos = c + 1;
+        }
+        if (parts.size() >= 4) {
+            CachedTablet ct;
+            ct.id = std::stoull(parts[0]);
+            ct.start = parts[1];
+            ct.end = parts[2];
+            ct.addr = parts[3] + ":" + parts[4];
+            local_tablets_.push_back(ct);
+        }
+    }
+    
+    std::sort(local_tablets_.begin(), local_tablets_.end(),
+              [](const auto& a, const auto& b) { return a.start < b.start; });
+    return !local_tablets_.empty();
 }
 
 // ========== 发送并接收一帧 ==========
@@ -186,7 +234,7 @@ bool LekvCli::Execute(const std::string& line) {
         exit(0);
     }
     if (cmd == "help") {
-        std::cout << "Commands:\n  put <key> <value>\n  get <key>\n  delete <key>\n  shards   -- show cached routes\n  exit / quit\n";
+        std::cout << "Commands:\n  put <key> <value>\n  get <key>\n  delete <key>\n  tablets\n  exit / quit\n";
         return true;
     }
     if (cmd == "tablets") {
