@@ -10,6 +10,7 @@
 #include <string>
 #include <map>
 #include <condition_variable>
+#include <shared_mutex>
 
 class RaftNode {
 public:
@@ -29,10 +30,33 @@ private:
     std::string GetNodeAddr(uint32_t node_id) const;
 
     // ========== Tablet 路由表 ==========
-    std::vector<Tablet> tablets_;               // Tablet 列表，按照 start_key 排序
-    size_t FindTabletIndex(const std::string& key) const;  // 二分查找 Tablet 索引
+    mutable std::shared_mutex tablet_mutex_;
+    std::vector<Tablet> tablets_;              // Tablet 列表，按照 start_key 排序
+    uint64_t next_tablet_id_ = 3;              // 下一个 Tablet ID，初始为 3（假设初始有 2 个 Tablet 1, 2）
+    uint64_t epoch_ = 1;                       // Tablet 版本号，每次调整后递增
+
+    size_t FindTabletIndex(const std::string& key) const;    // 二分查找 Tablet 索引
     bool GetTabletRoute(const std::string& key, Tablet& out) const;
-    void BuildInitialTablets();  // 根据 DataNode 数量创建初始区间
+    void BuildInitialTablets();                              // 根据 DataNode 数量创建初始区间
+
+    // ========== 自动分裂与负载均衡 ==========
+    void BalancerLoop();
+    bool TrySplitTablet(size_t idx);
+    bool DoLoadBalance();
+    bool QueryTabletStats(uint32_t node_id, const std::string& start,
+                          const std::string& end, uint64_t& key_count,
+                          std::string& median_key);
+    void SyncAllTabletStats();
+    bool MigrateTablet(size_t idx, uint32_t dst_node);
+    bool ScanAndTransferData(uint32_t src_node, uint32_t dst_node,
+                             const std::string& start, const std::string& end);
+
+    std::thread balancer_thread_;
+    std::atomic<bool> balancer_running_{false};
+    static constexpr uint64_t SPLIT_THRESHOLD = 10;
+    static constexpr uint64_t BALANCE_DIFF_THRESHOLD = 8;
+
+    // ========== DataNode 统计与扫描 ==========
     bool DataNodeGetTabletStats(const std::string& start, const std::string& end,
                                 uint64_t& key_count, std::string& median_key);
 
@@ -48,7 +72,8 @@ private:
     std::vector<uint8_t> HandleDataNodeGet(const std::vector<uint8_t>& payload);
     std::vector<uint8_t> HandleDataNodeDelete(const std::vector<uint8_t>& payload);
     std::vector<uint8_t> HandleDataNodeTabletStats(const std::vector<uint8_t>& payload);
-    
+    std::vector<uint8_t> HandleDataNodeScanRange(uint32_t req_id, const std::vector<uint8_t>& payload);
+
     // 工具函数
     void PrintRole() const;
     
