@@ -20,6 +20,7 @@ public:
     static constexpr uint8_t OP_PING      = 0x05;
     static constexpr uint8_t OP_SHARDS    = 0x06;
     static constexpr uint8_t OP_TABLET_STATS = 0x07;    // Proxy -> DataNode 查询区间统计
+    static constexpr uint8_t OP_SCAN_RANGE   = 0x08;    // Proxy -> DataNode 扫描一个范围的 KV 对
 
     // Status
     static constexpr uint8_t ST_OK             = 0x00;

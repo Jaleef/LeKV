@@ -1,6 +1,5 @@
 #include "binary_protocol.h"
 #include "rpc_client.h"
-#include "common/common.h"
 
 #include <cstdint>
 #include <string>
@@ -295,6 +294,7 @@ bool LekvCli::Execute(const std::string& line) {
             } else {
                 std::cout << "OK" << std::endl;
             }
+            break;
         case BinaryProtocol::ST_NOT_FOUND:
             std::cout << "Key not found" << std::endl;
             break;

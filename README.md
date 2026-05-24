@@ -75,7 +75,7 @@ cd build/bin
 
 #### 响应帧
 
-[**1B** Status] [**1B** TabletID] [**4B** Epoch]  [**2B** RouteLen] [**RouteLen** RouteInfo]
+[**1B** Status] [**4B** ValueLen] [**1B** TabletID] [**4B** Epoch]  [**2B** RouteLen] [**RouteLen** RouteInfo]
 
 - Status：返回状态
   - 0x00：**OK**，路由查询成功，客户端继续第二次 RTT
@@ -130,20 +130,51 @@ cd build/bin
 
 #### 响应帧
 
-[**1B** Status] [**4B** KeyCount] [**2B** MedianLen] [Median]
+[**1B** Status] [**4B** ValueLe] [**4B** KeyCount] [**2B** MedianLen] [Median]
+
+
+
+### SCAN_RANGE 数据迁移
+
+#### 请求帧（Proxy -》 源 DataNode）
+
+[**1B** Opcode = 0x08] [**2B** StartKeyLen] [StartKey] [**2B** EndKeyLen ] [EndKey]
+
+| 字段    | 长度 | 说明                                 |
+| ------- | ---- | ------------------------------------ |
+| `Op`    | 1B   | 固定 `0x08`                          |
+| `slen`  | 2B   | start\_key 长度（`htonl`），空串为 0 |
+| `start` | slen | 区间起始键（包含），空串表示 `-∞`    |
+| `elen`  | 2B   | end\_key 长度（`htonl`），空串为 0   |
+| `end`   | elen | 区间结束键（不包含），空串表示 `+∞`  |
+
+#### 响应帧
+
+[**1B** Status] [**4B** ValueLen] [**4B** Count] [count * (2B keylen + key + 4B valuelen + value)]
+
+| 字段      | 长度 | 说明                             |
+| --------- | ---- | -------------------------------- |
+| `Status`  | 1B   | `0x00` OK                        |
+| `vlen`    | 4B   | 后续 payload 总字节数（`htonl`） |
+| `count`   | 4B   | KV 对的数量（`htonl`）           |
+| `keylen`  | 2B   | 第 i 个 key 的长度（`htonl`）    |
+| `key`     | klen | key 数据                         |
+| `valulen` | 4B   | 第 i 个 value 的长度（`htonl`）  |
+| `value`   | vlen | value 数据                       |
 
 
 
 ### 帧类型表
 
-| 方向 | 帧类型        | 首字节 (Payload) |
-| ---- | ------------- | ---------------- |
-| C→P  | GET\_ROUTE    | `0x01`           |
-| C→P  | SHARDS        | `0x06`           |
-| C→D  | PUT           | `0x03`           |
-| C→D  | GET           | `0x02`           |
-| C→D  | DELETE        | `0x04`           |
-| P→D  | TABLET\_STATS | `0x07`           |
+| 操作码     | 名称             | 发起方       | 处理方       | 用途                          |
+| ---------- | ---------------- | ------------ | ------------ | ----------------------------- |
+| `0x01`     | `GET_ROUTE`      | 客户端       | Proxy        | 查 key 路由到哪个 DataNode    |
+| `0x02`     | `GET`            | 客户端       | DataNode     | 读单个 key                    |
+| `0x03`     | `PUT`            | 客户端/Proxy | DataNode     | 写单个 key                    |
+| `0x04`     | `DELETE`         | 客户端       | DataNode     | 删除单个 key                  |
+| `0x06`     | `SHARDS`         | 客户端       | Proxy        | 拉取全量 Tablet 路由表        |
+| `0x07`     | `TABLET_STATS`   | Proxy        | DataNode     | 查区间 key 数量 + 中位数      |
+| **`0x08`** | **`SCAN_RANGE`** | **Proxy**    | **DataNode** | **扫描区间全部 KV（迁移用）** |
 
 
 
