@@ -15,8 +15,7 @@ sleep 1
 ps aux | grep lekv
 
 # 3. 运行全部测试
-cd ../../test
-python test_lekv.py all
+python test_lekv.py --auto-start all
 
 # # 4. 单独运行某项测试
 # python3 test_lekv.py basic    # 基本 CRUD
