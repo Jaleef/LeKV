@@ -5,7 +5,7 @@ using namespace lekv;
 std::vector<uint8_t> BinaryProtocol::EncodeGetRoute(uint32_t req_id, const std::string& key) {
     uint16_t key_len = static_cast<uint16_t>(key.size());
     uint32_t payload_len = 1 + 2 + key_len;
-    uint32_t frame_len = 100 + payload_len;
+    uint32_t frame_len = 10 + payload_len;
 
     std::vector<uint8_t> buf;
     buf.reserve(frame_len);

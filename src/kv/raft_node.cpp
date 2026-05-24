@@ -492,7 +492,7 @@ std::vector<uint8_t> RaftNode::HandleProxyGetRoute(uint32_t req_id, const std::v
     result.insert(result.end(), reinterpret_cast<uint8_t*>(&rl), reinterpret_cast<uint8_t*>(&rl) + 2);
     result.insert(result.end(), addr.begin(), addr.end());
 
-    // BinaryRpcServer 会自动打包帧头，这里只要返回payload 部分
+    // BinaryRpcServer 会自动打包帧头, 并且将 ValueLen 字段写入，这里只要返回payload 部分
     return result;
 }
 
