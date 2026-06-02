@@ -23,8 +23,8 @@ public:
 
 private:
     // 角色判断：固定 9001 为Leader
-    bool IsProxy() const { return port_ == LEADER_PORT; }
-    bool IsDataNode() const { return !IsProxy(); }
+    bool IsMaster() const { return port_ == LEADER_PORT; }
+    bool IsDataNode() const { return !IsMaster(); }
 
     // ========== 节点地址查询 ==========
     std::string GetNodeAddr(uint32_t node_id) const;
@@ -63,9 +63,9 @@ private:
     // ========== 命令路由 ==========
     std::vector<uint8_t> HandleBinaryRequest(uint32_t req_id, const std::vector<uint8_t>& payload);
 
-    // Proxy 转发逻辑
-    std::vector<uint8_t> HandleProxyGetRoute(uint32_t req_id, const std::vector<uint8_t>& payload);
-    std::vector<uint8_t> HandleProxyShards(uint32_t req_id);
+    // Master 转发逻辑
+    std::vector<uint8_t> HandleMasterGetRoute(uint32_t req_id, const std::vector<uint8_t>& payload);
+    std::vector<uint8_t> HandleMasterShards(uint32_t req_id);
 
     // DataNode 本地处理逻辑
     std::vector<uint8_t> HandleDataNodePut(const std::vector<uint8_t>& payload);
@@ -83,9 +83,9 @@ private:
     uint16_t port_;
     std::vector<PeerInfo> peers_;
 
-    // ========== Proxy 组件 ==========
+    // ========== Master 组件 ==========
     std::unique_ptr<BinaryRpcServer> binary_server_;
-    std::map<uint32_t, std::unique_ptr<BinaryRpcClient>> node_clients_;
+    std::map<uint32_t, std::unique_ptr<RpcClient>> node_clients_;
     
     // ========== DataNode 组件 ==========
     std::unique_ptr<StorageEngine> storage_;

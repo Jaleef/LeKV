@@ -9,16 +9,16 @@
 RaftNode::RaftNode(uint64_t node_id, uint16_t port, const std::vector<PeerInfo>& peers)
     : node_id_(node_id), port_(port), peers_(peers) {
 
-    if (IsProxy()) {
-        std::cout << "[Node " << node_id_ << "] PROXY on port " << port_ << std::endl;
+    if (IsMaster()) {
+        std::cout << "[Node " << node_id_ << "] Master on port " << port_ << std::endl;
 
         // 建立到所有 DataNode 的管理连接
         for (const auto& peer : peers) {
             if (peer.port == LEADER_PORT) continue;
-            auto client = std::make_unique<BinaryRpcClient>();
+            auto client = std::make_unique<RpcClient>();
             if (client->Connect(peer.ip, peer.port)) {
                 node_clients_[peer.id] = std::move(client);
-                std::cout << "[Proxy] Connected to DataNode " << peer.id << std::endl;
+                std::cout << "[Master] Connected to DataNode " << peer.id << std::endl;
             }
         }
         BuildInitialTablets();
@@ -87,8 +87,8 @@ void RaftNode::BuildInitialTablets() {
     next_tablet_id_ = 3;
     epoch_ = 1;
 
-    std::cout << "[Proxy] Tablet 1 [\"\", m) -> Node " << t1.node_id << std::endl;
-    std::cout << "[Proxy] Tablet 2 [m, \"\") -> Node " << t2.node_id << std::endl;
+    std::cout << "[Master] Tablet 1 [\"\", m) -> Node " << t1.node_id << std::endl;
+    std::cout << "[Master] Tablet 2 [m, \"\") -> Node " << t2.node_id << std::endl;
 }
 
 // ========== Tablet 路由表：二分查找 ==========
@@ -238,7 +238,7 @@ bool RaftNode::TrySplitTablet(size_t idx) {
         tablets_.insert(tablets_.begin() + idx + 1, right);
         epoch_++;
 
-        std::cout << "[Proxy] Split T" << old_t.id
+        std::cout << "[Master] Split T" << old_t.id
                   << " [" << old_t.start_key << "," << old_t.end_key
                   << ") at \"" << median_key << "\" -> T" << left.id
                   << " [" << left.start_key << "," << left.end_key
@@ -285,7 +285,7 @@ bool RaftNode::DoLoadBalance() {
 
     bool ok = MigrateTablet(target_idx, dst_node);
     if (ok) {
-        std::cout << "[Proxy] Move T" << tablets_[target_idx].id
+        std::cout << "[Master] Move T" << tablets_[target_idx].id
                   << " N" << src_node << "->N" << dst_node << std::endl;
     }
     return ok;
@@ -442,7 +442,7 @@ bool RaftNode::DataNodeGetTabletStats(const std::string& start, const std::strin
     return storage_->RangeStats(start, end, key_count, median_key);
 }
 
-// ========== 命令处理：Proxy 转发 或者 DataNode 本地处理 ==========
+// ========== 命令处理：Master 转发 或者 DataNode 本地处理 ==========
 std::vector<uint8_t> RaftNode::HandleBinaryRequest(uint32_t req_id, const std::vector<uint8_t>& payload) {
     if (payload.empty()) {
         return {BinaryProtocol::ST_BAD_REQUEST};
@@ -450,10 +450,10 @@ std::vector<uint8_t> RaftNode::HandleBinaryRequest(uint32_t req_id, const std::v
 
     uint8_t opcode = payload[0];
 
-    if (IsProxy()) {
-        // Proxy 只负责转发，不存数据
-        if (opcode == BinaryProtocol::OP_GET_ROUTE) { return HandleProxyGetRoute(req_id, payload); } 
-        if (opcode == BinaryProtocol::OP_SHARDS) { return HandleProxyShards(req_id); } 
+    if (IsMaster()) {
+        // Master 只负责转发，不存数据
+        if (opcode == BinaryProtocol::OP_GET_ROUTE) { return HandleMasterGetRoute(req_id, payload); } 
+        if (opcode == BinaryProtocol::OP_SHARDS) { return HandleMasterShards(req_id); } 
     } else {
         // DataNode 处理数据操作
         if (opcode == BinaryProtocol::OP_PUT) { return HandleDataNodePut(payload); }
@@ -466,7 +466,7 @@ std::vector<uint8_t> RaftNode::HandleBinaryRequest(uint32_t req_id, const std::v
     return {BinaryProtocol::ST_BAD_REQUEST};
 }
 
-std::vector<uint8_t> RaftNode::HandleProxyGetRoute(uint32_t req_id, const std::vector<uint8_t>& payload) {
+std::vector<uint8_t> RaftNode::HandleMasterGetRoute(uint32_t req_id, const std::vector<uint8_t>& payload) {
     if (payload.size() < 3) {
         // payload: [1B opcode][2B key_len][key_len bytes key]
         // 至少有 3B
@@ -496,7 +496,7 @@ std::vector<uint8_t> RaftNode::HandleProxyGetRoute(uint32_t req_id, const std::v
     return result;
 }
 
-std::vector<uint8_t> RaftNode::HandleProxyShards(uint32_t req_id) {
+std::vector<uint8_t> RaftNode::HandleMasterShards(uint32_t req_id) {
     std::shared_lock<std::shared_mutex> lock(tablet_mutex_);
     std::string body = std::to_string(tablets_.size()) + " ";
     bool first = true;
@@ -661,13 +661,13 @@ void RaftNode::Run() {
     }
 
     running_ = true;
-    if (IsProxy()) {
+    if (IsMaster()) {
         balancer_running_ = true;
         balancer_thread_ = std::thread(&RaftNode::BalancerLoop, this);
     }
 
     std::cout << "Node: " << node_id_ << " running at port " << port_
-        << " [" << (IsProxy() ? "Proxy" : "DataNode") << "]" << std::endl;
+        << " [" << (IsMaster() ? "Master" : "DataNode") << "]" << std::endl;
 
     
     // 阻塞等待
@@ -677,8 +677,8 @@ void RaftNode::Run() {
 }
 
 void RaftNode::PrintRole() const {
-    if (IsProxy()) {
-        std::cout << "[Proxy] ";
+    if (IsMaster()) {
+        std::cout << "[Master] ";
     } else {
         std::cout << "[DataNode " << port_ << "] ";
     }

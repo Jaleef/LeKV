@@ -38,12 +38,12 @@ private:
 
     // 工具函数
     uint32_t NextReqId() { return req_id_++; }
-    bool SendAndRecv(BinaryRpcClient& client, const std::vector<uint8_t>& req, 
+    bool SendAndRecv(RpcClient& client, const std::vector<uint8_t>& req, 
         uint32_t& resp_req_id, std::vector<uint8_t>& payload);
 
     std::string proxy_ip_;
     uint16_t proxy_port_ = 0;
-    BinaryRpcClient proxy_conn_;    // 与 Proxy 的长连接
+    RpcClient proxy_conn_;    // 与 Proxy 的长连接
 
     uint32_t req_id_ = 1;
     uint32_t shard_count_ = 0;
@@ -122,7 +122,7 @@ bool LekvCli::RefreshTablets() {
 }
 
 // ========== 发送并接收一帧 ==========
-bool LekvCli::SendAndRecv(BinaryRpcClient& client, const std::vector<uint8_t>& req, 
+bool LekvCli::SendAndRecv(RpcClient& client, const std::vector<uint8_t>& req, 
                           uint32_t& resp_req_id, std::vector<uint8_t>& payload) {
     if (!client.Send(req)) return false;
 
@@ -173,7 +173,7 @@ bool LekvCli::DoDataNodeRequest(const std::string& addr, uint8_t opcode,
     std::string ip = addr.substr(0, colon);
     uint16_t port = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
     
-    BinaryRpcClient dn;
+    RpcClient dn;
     if (!dn.Connect(ip, port)) {
         status = BinaryProtocol::ST_TIMEOUT;
         result = "Connect to " + addr + " failed";
