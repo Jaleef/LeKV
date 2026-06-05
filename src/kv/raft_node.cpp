@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <cstring>
 
+using json = nlohmann::json;
+using namespace std::chrono;
+
 #include "rpc/text_protocol.h"
 
 RaftNode::RaftNode(uint64_t node_id, uint16_t port, const std::vector<PeerInfo>& peers)
@@ -64,6 +67,24 @@ void RaftNode::Stop() {
     for (auto& [id, c] : node_clients_) { c->Close(); }
 
     storage_.reset();  // 关闭 LevelDB，释放资源
+
+    if (IsMaster()) {
+        const std::string filename = "transfer_time.json";
+        json log = {
+            {"迁移个数", transfer_count_},
+            {"迁移时间(ms)", transfer_time_ms_},
+            {"平均每个迁移耗时(ms)", transfer_count_ > 0 ? (transfer_time_ms_ * 1.0 / transfer_count_) : 0},
+        };
+
+        std::ofstream file_out(filename);
+        if (file_out.is_open()) {
+            file_out << log.dump(4); // dump(4) 参数使输出带缩进，更美观
+            file_out.close();
+            std::cout << "日志已成功追加!" << std::endl;
+        } else {
+            std::cerr << "无法打开文件进行写入: " << filename << std::endl;
+        }
+    }
 }
 
 // ========== 节点地址查询 ==========
@@ -266,11 +287,19 @@ bool RaftNode::DoLoadBalance() {
     std::string start = tablets_[target_idx].start_key;
     std::string end = tablets_[target_idx].end_key;
 
+    auto start_time = high_resolution_clock::now();
+
     bool ok = MigrateTablet(target_idx, dst_node);
     if (ok) {
         std::cout << "[Master] Move T" << tablets_[target_idx].id
                   << " N" << src_node << "->N" << dst_node << std::endl;
     }
+
+    auto end_time = high_resolution_clock::now();
+    auto duration_ms = duration_cast<milliseconds>(end_time - start_time).count();
+    std::cout << "[Master] 迁移" << tablets_[target_idx].key_count << "个kv对，耗时" << duration_ms << " ms" << std::endl;
+    transfer_count_ += tablets_[target_idx].key_count;
+    transfer_time_ms_ += duration_ms; 
     return ok;
 }
 

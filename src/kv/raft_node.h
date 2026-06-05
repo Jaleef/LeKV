@@ -119,6 +119,10 @@ private:
     std::atomic<bool> running_{false};
     std::mutex mutex_;
     std::condition_variable cv_;
+
+    // 计算负载均衡进行数据迁移的时间
+    uint64_t transfer_count_ = 0;
+    uint64_t transfer_time_ms_ = 0;
 };
 
 #endif //LEKV_RAFT_NODE_H
