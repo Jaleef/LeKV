@@ -15,12 +15,15 @@ int main(int argc, char* argv[]) {
     }
 
     // 注册信号处理函数
-    std::signal(SIGINT, [](int signal) {
+    auto signal_handler = [](int signal) {
         if (signal == SIGINT) {
             std::cout << "Received SIGINT, shutting down..." << std::endl;
             g_stop.store(true); // 设置标志以通知主循环退出
         }
-    });
+    };
+
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
 
     uint16_t node_id, port;
     if (argc == 1) {
