@@ -21,6 +21,7 @@ public:
     static constexpr uint8_t OP_SHARDS    = 0x06;
     static constexpr uint8_t OP_TABLET_STATS = 0x07;    // Proxy -> DataNode 查询区间统计
     static constexpr uint8_t OP_SCAN_RANGE   = 0x08;    // Proxy -> DataNode 扫描一个范围的 KV 对
+    static constexpr uint8_t OP_DELETE_RANGE  = 0x09;   // Proxy -> DataNode 删除一个范围的 KV 对（迁移后清理源节点）
 
     // Status
     static constexpr uint8_t ST_OK             = 0x00;

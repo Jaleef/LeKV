@@ -63,3 +63,26 @@ bool StorageEngine::RangeStats(const std::string& start, const std::string& end,
     median_key = keys[key_count / 2];
     return true;
 }
+
+bool StorageEngine::DeleteRange(const std::string& start, const std::string& end) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_ptr<leveldb::Iterator> it(db_->NewIterator(leveldb::ReadOptions()));
+
+    std::vector<std::string> keys_to_delete;
+    keys_to_delete.reserve(1024);
+
+    // 第一遍：收集所有需要删除的 key（避免在迭代时修改数据库）
+    for (it->Seek(start); it->Valid(); it->Next()) {
+        std::string k = it->key().ToString();
+        if (!end.empty() && k >= end) break;
+        keys_to_delete.push_back(k);
+    }
+
+    // 第二遍：批量删除
+    leveldb::WriteOptions write_options;
+    for (const auto& k : keys_to_delete) {
+        db_->Delete(write_options, k);
+    }
+
+    return true;
+}

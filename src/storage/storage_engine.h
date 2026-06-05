@@ -32,6 +32,10 @@ public:
     // 范围统计：返回 key 数量 + 中位数 key
     bool RangeStats(const std::string& start, const std::string& end,
                     uint64_t& key_count, std::string& median_key);
+    
+    // 范围删除：删除 [start, end) 区间内的所有 key
+    // start 为空表示从负无穷开始，end 为空表示到正无穷结束
+    bool DeleteRange(const std::string& start, const std::string& end);
 private:
     std::unique_ptr<leveldb::DB> db_;
     std::mutex mutex_;
