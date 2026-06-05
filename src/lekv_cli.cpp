@@ -26,19 +26,21 @@ public:
 private:
     bool Execute(const std::string& line);
 
-    bool RefreshTablets();   // 从 Proxy 拉取全量路由表
+    // 从 Proxy 实时拉取全量路由表（无缓存，每次调用都重新获取）
+    bool FetchRouteTable(std::vector<CachedTablet>& out);
 
-    // 路由层：查缓存或问 Proxy
-    bool DoGetRoute(const std::string& key, std::string& addr);
+    // 路由层：在实时路由表中二分查找 key 对应的 DataNode 地址
+    bool FindRoute(const std::vector<CachedTablet>& tablets,
+                   const std::string& key, std::string& addr);
 
     // 数据层：直连 DataNode
-    bool DoDataNodeRequest(const std::string& addr, uint8_t opcode, 
-        const std::string& key, const std::string& value, 
+    bool DoDataNodeRequest(const std::string& addr, uint8_t opcode,
+        const std::string& key, const std::string& value,
         uint8_t& status, std::string& result);
 
     // 工具函数
     uint32_t NextReqId() { return req_id_++; }
-    bool SendAndRecv(RpcClient& client, const std::vector<uint8_t>& req, 
+    bool SendAndRecv(RpcClient& client, const std::vector<uint8_t>& req,
         uint32_t& resp_req_id, std::vector<uint8_t>& payload);
 
     std::string proxy_ip_;
@@ -46,29 +48,26 @@ private:
     RpcClient proxy_conn_;    // 与 Proxy 的长连接
 
     uint32_t req_id_ = 1;
-    uint32_t shard_count_ = 0;
-    std::vector<CachedTablet> local_tablets_; // 本地 Tablet tree 副本
 };
 
-// ========== 初始化连接 Proxy 并拉取全局路由 ==========
+// ========== 初始化：仅解析 Proxy 地址 ==========
 bool LekvCli::Init(const std::string& proxy_addr) {
-    // 解析 proxy_addr
     size_t colon = proxy_addr.find(':');
     if (colon == std::string::npos) {
-        std::cerr << "Invalid proxy address，expect ip:port" << std::endl;
+        std::cerr << "Invalid proxy address, expect ip:port" << std::endl;
         return false;
     }
     proxy_ip_ = proxy_addr.substr(0, colon);
     proxy_port_ = static_cast<uint16_t>(std::stoi(proxy_addr.substr(colon + 1)));
 
-    if (!RefreshTablets()) { return false; }
-
-    std::cout << "[Client] Connect to proxy " << proxy_addr << ". Loaded " << local_tablets_.size() << " tablets." << std::endl;
-
+    std::cout << "[Client] Proxy: " << proxy_addr << " (no local cache)" << std::endl;
     return true;
 }
 
-bool LekvCli::RefreshTablets() {
+// ========== 从 Proxy 实时拉取全量路由表（无缓存）==========
+bool LekvCli::FetchRouteTable(std::vector<CachedTablet>& out) {
+    out.clear();
+
     if (!proxy_conn_.IsConnected()) {
         if (!proxy_conn_.Connect(proxy_ip_, proxy_port_)) { return false; }
     }
@@ -84,15 +83,16 @@ bool LekvCli::RefreshTablets() {
         if (!SendAndRecv(proxy_conn_, req, resp_req_id, payload)) { return false; }
     }
 
-    if (resp_req_id != rid || payload.empty() || payload[0] != BinaryProtocol::ST_OK) { return false; }
+    if (resp_req_id != rid || payload.empty() || payload[0] != BinaryProtocol::ST_OK) {
+        return false;
+    }
 
     // 解析 body: "2 1001::m:127.0.0.1:9002 1002:m::127.0.0.1:9003"
     std::string body(payload.begin() + 5, payload.end());
     std::istringstream iss(body);
     size_t count;
     iss >> count;
-    
-    local_tablets_.clear();
+
     std::string segment;
     while (iss >> segment) {
         std::vector<std::string> parts;
@@ -112,13 +112,13 @@ bool LekvCli::RefreshTablets() {
             ct.start = parts[1];
             ct.end = parts[2];
             ct.addr = parts[3] + ":" + parts[4];
-            local_tablets_.push_back(ct);
+            out.push_back(ct);
         }
     }
-    
-    std::sort(local_tablets_.begin(), local_tablets_.end(),
+
+    std::sort(out.begin(), out.end(),
               [](const auto& a, const auto& b) { return a.start < b.start; });
-    return !local_tablets_.empty();
+    return !out.empty();
 }
 
 // ========== 发送并接收一帧 ==========
@@ -137,23 +137,24 @@ bool LekvCli::SendAndRecv(RpcClient& client, const std::vector<uint8_t>& req,
     return true;
 }
 
-// ========== RTT 1: 获取路由（缓存优先）==========
-bool LekvCli::DoGetRoute(const std::string& key, std::string& addr) {
-    if (local_tablets_.empty() && !RefreshTablets()) { return false; }
+// ========== 在实时路由表中二分查找 key 对应的 DataNode 地址 ==========
+bool LekvCli::FindRoute(const std::vector<CachedTablet>& tablets,
+                        const std::string& key, std::string& addr) {
+    if (tablets.empty()) return false;
 
-    // 二分查找（与 Proxy 相同逻辑）
-    size_t left = 0, right = local_tablets_.size();
+    size_t left = 0, right = tablets.size();
     while (left < right) {
-        size_t mid =left + (right - left) / 2;
-        if (local_tablets_[mid].start <= key) {
+        size_t mid = left + (right - left) / 2;
+        if (tablets[mid].start <= key) {
             left = mid + 1;
         } else {
             right = mid;
         }
     }
-    if (left == 0) { return false; }
-    const auto& t = local_tablets_[left - 1];
-    if (!t.end.empty() && key >= t.end) { return false; }
+    if (left == 0) return false;
+
+    const auto& t = tablets[left - 1];
+    if (!t.end.empty() && key >= t.end) return false;
 
     addr = t.addr;
     return true;
@@ -211,12 +212,6 @@ bool LekvCli::DoDataNodeRequest(const std::string& addr, uint8_t opcode,
         result.clear();
     }
 
-    // 如果 DataNode 返回的 NOT_MY_SHARD，说明缓存过期，清除该 shard 的缓存
-    if (status == BinaryProtocol::ST_NOT_MY_SHARD) {
-        std::cout << "[Client] NOT_MY_SHARD, refreshing tablets..." << std::endl;
-        local_tablets_.clear();  // 强制下次刷新全量路由表
-    }
-
     return true;
 }
 
@@ -237,8 +232,13 @@ bool LekvCli::Execute(const std::string& line) {
         return true;
     }
     if (cmd == "tablets") {
-        for (const auto& t : local_tablets_) {
-            std::cout << " Tablet " << t.id << " [" << t.start 
+        std::vector<CachedTablet> tablets;
+        if (!FetchRouteTable(tablets)) {
+            std::cerr << "Failed to fetch route table from proxy" << std::endl;
+            return false;
+        }
+        for (const auto& t : tablets) {
+            std::cout << " Tablet " << t.id << " [" << t.start
                       << ","  << t.end << ") -> " << t.addr << std::endl;
         }
         return true;
@@ -262,29 +262,25 @@ bool LekvCli::Execute(const std::string& line) {
                      (cmd == "put") ? BinaryProtocol::OP_PUT :
                      (cmd == "delete" || cmd == "del") ? BinaryProtocol::OP_DELETE :
                      BinaryProtocol::OP_GET;
-    
-    // RTT 1: 获取路由 （查缓存或问 Proxy）
-    std::string addr;
-    if (!DoGetRoute(key, addr)) {
-        std::cerr << "Failed to get route for key: " << key << std::endl;
+
+    // 每次操作前实时拉取最新路由表（无缓存）
+    std::vector<CachedTablet> tablets;
+    if (!FetchRouteTable(tablets)) {
+        std::cerr << "Failed to fetch route table from proxy" << std::endl;
         return false;
     }
 
-    // RTT 2: 直连 DataNode 执行命令
+    std::string addr;
+    if (!FindRoute(tablets, key, addr)) {
+        std::cerr << "Failed to find route for key: " << key << std::endl;
+        return false;
+    }
+
     uint8_t status;
     std::string result;
     if (!DoDataNodeRequest(addr, opcode, key, value, status, result)) {
         std::cerr << "Error: " << result << std::endl;
         return false;
-    }
-
-    // 如果 NO_MY_SHARD，刷新缓存后重试一次
-    if (status == BinaryProtocol::ST_NOT_MY_SHARD) {
-        std::cout << "[Client] Route stale (NOT_MY_SHARD), refreshing..." << std::endl;
-        if (!DoGetRoute(key, addr) || !DoDataNodeRequest(addr, opcode, key, value, status, result)) {
-            std::cerr << "Error: retry failed" << key << std::endl;
-            return false;
-        }
     }
 
     switch (status) {
@@ -297,6 +293,9 @@ bool LekvCli::Execute(const std::string& line) {
             break;
         case BinaryProtocol::ST_NOT_FOUND:
             std::cout << "Key not found" << std::endl;
+            break;
+        case BinaryProtocol::ST_NOT_MY_SHARD:
+            std::cerr << "Error: Route stale (NOT_MY_SHARD), the tablet may have just moved. Retry the command." << std::endl;
             break;
         default:
             std::cerr << "Error: status = " << (int)status << (result.empty() ? "" : " " + result) << std::endl;
