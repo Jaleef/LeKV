@@ -4,3 +4,4 @@ build
 cmake-build-debug
 perf_result.txt
 db_*
+__pycache__
