@@ -42,7 +42,7 @@ class LekvClient:
     每次操作前实时从 Proxy 拉取路由表（无本地缓存）。
     """
 
-    def __init__(self, proxy_host: str = "127.0.0.1", proxy_port: int = 9001):
+    def __init__(self, proxy_host: str = "121.89.83.240", proxy_port: int = 9001):
         self.proxy_host = proxy_host
         self.proxy_port = proxy_port
         self._req_id = 1

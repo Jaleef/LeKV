@@ -36,9 +36,9 @@ int main(int argc, char* argv[]) {
 
     std::vector<PeerInfo> peers;
 
-    peers.emplace_back(1, "127.0.0.1", 9001);
-    peers.emplace_back(2, "127.0.0.1", 9002);
-    peers.emplace_back(3, "127.0.0.1", 9003);
+    peers.emplace_back(1, "121.89.83.240", 9001);
+    peers.emplace_back(2, "8.130.133.227", 9002);
+    peers.emplace_back(3, "39.101.73.135", 9003);
 
     RaftNode node(node_id, port, peers);
 

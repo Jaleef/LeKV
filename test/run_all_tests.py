@@ -50,7 +50,7 @@ def wait_for_cluster(timeout: float = 10.0) -> bool:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1.0)
-            sock.connect(("127.0.0.1", 9001))
+            sock.connect(("121.89.83.240", 9001))
             sock.close()
             return True
         except Exception:

@@ -317,7 +317,7 @@ void LekvCli::Run() {
 
 // ========== 程序入口 ==========
 int main(int argc, char** argv) {
-    std::string proxy_addr = "127.0.0.1:9001";
+    std::string proxy_addr = "121.89.83.240:9001";
     for (int i = 1 ; i < argc ; ++i) {
         std::string arg = argv[i];
         if (arg == "--proxy" && i + 1 < argc) proxy_addr = argv[++i];
