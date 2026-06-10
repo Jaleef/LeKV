@@ -1,6 +1,8 @@
 #include "binary_protocol.h"
 #include "rpc_client.h"
 
+#include "../third_party/nlohmann/json.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -8,7 +10,9 @@
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <fstream>
 
+using json = nlohmann::json;
 using namespace lekv;
 
 struct CachedTablet {
@@ -317,7 +321,24 @@ void LekvCli::Run() {
 
 // ========== 程序入口 ==========
 int main(int argc, char** argv) {
-    std::string proxy_addr = "121.89.83.240:9001";
+    std::string proxy_ip;
+    uint16_t proxy_port = 0;
+    try {
+        std::ifstream file("../../src/config.json");
+        if (!file.is_open()) { throw std::runtime_error("配置文件 config.json 打开失败"); }
+        json j = json::parse(file);
+        const auto& address = j.at("ADDRESS_CONFIG");
+        proxy_ip = address[0].at("IP").get<std::string>();
+        proxy_port = address[0].at("PORT").get<uint16_t>();
+        file.close();
+    } catch (const json::parse_error& e) {
+        std::cerr << "JSON解析错误: " << e.what() << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "错误: " << e.what() << std::endl;
+    }
+
+    std::string proxy_addr = proxy_ip + ":" + std::to_string(proxy_port);
+
     for (int i = 1 ; i < argc ; ++i) {
         std::string arg = argv[i];
         if (arg == "--proxy" && i + 1 < argc) proxy_addr = argv[++i];

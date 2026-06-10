@@ -29,7 +29,7 @@ NUM_THREADS = 4  # 并发线程数
 
 def gen_key(idx: int) -> str:
     """生成 key, 均匀分布在两个初始 Tablet"""
-    prefix = "a" if idx % 2 == 0 else "z"
+    prefix = chr(ord('a') + idx % 26)
     return f"{prefix}{idx:06d}"
 
 

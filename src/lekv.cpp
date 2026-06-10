@@ -1,9 +1,14 @@
 #include "raft_node.h"
 
+#include "../third_party/nlohmann/json.hpp"
+
 #include <iostream>
 #include <string>
+#include <fstream> 
 
 #include <csignal>
+
+using json = nlohmann::json;
 
 // 全局标志，必须是静态存储期，以便在信号处理程序中访问
 static std::atomic<bool> g_stop{false};
@@ -36,9 +41,26 @@ int main(int argc, char* argv[]) {
 
     std::vector<PeerInfo> peers;
 
-    peers.emplace_back(1, "121.89.83.240", 9001);
-    peers.emplace_back(2, "8.130.133.227", 9002);
-    peers.emplace_back(3, "39.101.73.135", 9003);
+    try {
+        std::ifstream file("../../src/config.json");
+        if (!file.is_open()) {
+            throw std::runtime_error("配置文件 config.json 打开失败");
+        }
+        json j = json::parse(file);
+        const auto& addresses = j.at("ADDRESS_CONFIG");
+        int id = 1;
+        for (const auto& item : addresses) {
+            peers.emplace_back(id++, item.at("IP").get<std::string>(), item.at("PORT").get<uint16_t>());
+        }
+        file.close();
+    } catch (const json::parse_error& e) {
+        std::cerr << "JSON解析错误: " << e.what() << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "错误: " << e.what() << std::endl;
+    }
+    // peers.emplace_back(1, "121.89.83.240", 9001);
+    // peers.emplace_back(2, "8.130.133.227", 9002);
+    // peers.emplace_back(3, "39.101.73.135", 9003);
 
     RaftNode node(node_id, port, peers);
 

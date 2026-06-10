@@ -16,9 +16,9 @@ from lekv_client import LekvClient
 
 PASS = "\033[92mPASS\033[0m"
 FAIL = "\033[91mFAIL\033[0m"
-SPLIT_THRESHOLD = 10
-BALANCE_INTERVAL = 5  # BalancerLoop 间隔秒数
-
+SPLIT_THRESHOLD = 10  # Tablet 分裂的 key 数阈值
+BALANCE_LOOP_INTERVAL_SEC = 5  # BalancerLoop 间隔秒数
+BALANCE_DIFF_THRESHOLD = SPLIT_THRESHOLD + 2 # 负载均衡迁移的负载差异阈值 (单位: key 数)
 
 def wait_for_condition(check_fn, timeout: float = 30.0, interval: float = 1.0):
     """等待条件满足, 超时返回 False"""
@@ -108,7 +108,7 @@ def test_tablet_migration():
     """
     测试负载均衡迁移。
     向一个 DataNode 写入大量数据, 等待负载均衡将 Tablet 迁移到另一个节点。
-    由于迁移需要两个节点间负载差异 > 8, 我们集中写入一个 Tablet。
+    由于迁移需要两个节点间负载差异 > BALANCE_LOOP_INTERVAL_SEC, 我们集中写入一个 Tablet。
     """
     print("\n[TEST] Tablet Load-Balance Migration...")
 
@@ -123,16 +123,16 @@ def test_tablet_migration():
     # 阶段 2: 集中写入一个 Tablet, 使其数据量远大于另一个
     print("       Phase 1: Inserting keys to create imbalance...")
     # 写入 "a" 开头的 key -> Tablet 1 ["", "m")
-    for i in range(20):
+    for i in range(BALANCE_DIFF_THRESHOLD * 2):  # 写入超过差异阈值的 key
         c.put(f"a{i:04d}", f"heavy_val_{i}")
 
     # 写入少量 "z" 开头的 key -> Tablet 2 ["m", "")
-    for i in range(3):
+    for i in range(BALANCE_DIFF_THRESHOLD // 2):  # 写入少量 key
         c.put(f"z{i:04d}", f"light_val_{i}")
 
     # 阶段 3: 等待至少一次 BalancerLoop 执行
-    print(f"       Phase 2: Waiting {BALANCE_INTERVAL * 2}s for balancer...")
-    time.sleep(BALANCE_INTERVAL * 2)
+    print(f"       Phase 2: Waiting {BALANCE_LOOP_INTERVAL_SEC * 2}s for balancer...")
+    time.sleep(BALANCE_LOOP_INTERVAL_SEC * 2)
 
     # 阶段 4: 检查路由表是否有变化（分裂或迁移）
     tablets_after = get_tablet_details()
@@ -144,14 +144,14 @@ def test_tablet_migration():
     print("       Phase 3: Verifying all data accessible...")
     errors = 0
 
-    for i in range(20):
+    for i in range(BALANCE_DIFF_THRESHOLD * 2):
         key = f"a{i:04d}"
         val = c.get(key)
         if val != f"heavy_val_{i}":
             print(f"       MISMATCH: get('{key}') expected 'heavy_val_{i}' got '{val}'")
             errors += 1
 
-    for i in range(3):
+    for i in range(BALANCE_DIFF_THRESHOLD // 2):
         key = f"z{i:04d}"
         val = c.get(key)
         if val != f"light_val_{i}":
@@ -159,9 +159,9 @@ def test_tablet_migration():
             errors += 1
 
     # 清理
-    for i in range(20):
+    for i in range(BALANCE_DIFF_THRESHOLD * 2):
         c.delete(f"a{i:04d}")
-    for i in range(3):
+    for i in range(BALANCE_DIFF_THRESHOLD // 2):
         c.delete(f"z{i:04d}")
 
     if errors == 0:
@@ -232,7 +232,7 @@ def test_stale_data_after_migration():
     for i in range(15):
         c.put(f"s{i:04d}", f"stale_test_{i}")
 
-    time.sleep(BALANCE_INTERVAL * 3)
+    time.sleep(BALANCE_LOOP_INTERVAL_SEC * 3)
 
     # 所有数据必须能正确读取
     errors = 0

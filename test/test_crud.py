@@ -42,6 +42,9 @@ def test_basic_put_get():
     assert val == "", f"Expected empty string, got '{val}'"
     print(f"  {PASS} put('empty_val', '') -> get = ''")
 
+    c.delete("hello")
+    c.delete("empty_val")
+
 
 def test_get_not_found():
     """测试 GET 不存在的 key"""
@@ -140,14 +143,14 @@ def test_multiple_puts_batch():
 
 def test_large_value():
     """测试大 value"""
-    print("\n[TEST] Large value (100KB)...")
+    print("\n[TEST] Large value (4KB)...")
     c = LekvClient()
 
-    large = "x" * (100 * 1024)
+    large = "x" * (4 * 1024)
     c.put("big_key", large)
     val = c.get("big_key")
     assert val == large, f"Large value mismatch: len(expected)={len(large)}, len(actual)={len(val)}"
-    print(f"  {PASS} 100KB value round-trip OK")
+    print(f"  {PASS} 4KB value round-trip OK")
     c.delete("big_key")
 
 

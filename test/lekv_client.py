@@ -7,7 +7,11 @@ LEKV Python Client - 纯 socket 实现二进制协议
 import socket
 import struct
 import time
+import json
 from typing import Optional, List, Tuple
+
+MASTER_IP = "121.89.83.240"
+MASTER_PORT = 9001
 
 # ---- 协议常量 ----
 MAGIC = 0x4C
@@ -42,9 +46,19 @@ class LekvClient:
     每次操作前实时从 Proxy 拉取路由表（无本地缓存）。
     """
 
-    def __init__(self, proxy_host: str = "121.89.83.240", proxy_port: int = 9001):
-        self.proxy_host = proxy_host
-        self.proxy_port = proxy_port
+    def __init__(self):
+        try:
+            with open("../src/config.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+            address_list = data.get("ADDRESS_CONFIG", [])
+            self.proxy_host = address_list[0].get("IP")
+            self.proxy_port = address_list[0].get("PORT")
+        except FileNotFoundError:
+            print(f"配置文件 config.json 读取失败")
+        except json.JSONDecodeError as e:
+            print(f"配置文件 config.json 解析失败: {e}")
+        except Exception as e:
+            print(f"其他错误：{e}")
         self._req_id = 1
 
     # ---- 内部工具 ----
