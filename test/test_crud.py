@@ -7,7 +7,6 @@ CRUD 正确性测试
 import sys
 import time
 import random
-import string
 from lekv_client import LekvClient
 
 PASS = "\033[92mPASS\033[0m"

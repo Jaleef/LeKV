@@ -1,4 +1,4 @@
-# rpc/CMakeLists.txt
+# src/rpc/CMakeLists.txt
 add_library(rpc
     text_protocol.cpp
     binary_protocol.cpp

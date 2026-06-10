@@ -14,4 +14,8 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -g")
 
 enable_testing()
+
+# 添加第三方 JSON 库
+add_subdirectory(third_party/nlohmann)
+
 add_subdirectory(src)

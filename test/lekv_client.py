@@ -8,10 +8,14 @@ import socket
 import struct
 import time
 import json
+import os
 from typing import Optional, List, Tuple
 
 MASTER_IP = "121.89.83.240"
 MASTER_PORT = 9001
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(SCRIPT_DIR, "..", "src", "config.json")
 
 # ---- 协议常量 ----
 MAGIC = 0x4C
@@ -48,11 +52,10 @@ class LekvClient:
 
     def __init__(self):
         try:
-            with open("../src/config.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-            address_list = data.get("ADDRESS_CONFIG", [])
-            self.proxy_host = address_list[0].get("IP")
-            self.proxy_port = address_list[0].get("PORT")
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            self.proxy_host = config["MASTER_CONFIG"]["IP"]
+            self.proxy_port = int(config["MASTER_CONFIG"]["PORT"])
         except FileNotFoundError:
             print(f"配置文件 config.json 读取失败")
         except json.JSONDecodeError as e:

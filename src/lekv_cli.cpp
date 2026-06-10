@@ -1,7 +1,6 @@
 #include "binary_protocol.h"
 #include "rpc_client.h"
-
-#include "../third_party/nlohmann/json.hpp"
+#include "common.h"
 
 #include <cstdint>
 #include <string>
@@ -12,7 +11,6 @@
 #include <algorithm>
 #include <fstream>
 
-using json = nlohmann::json;
 using namespace lekv;
 
 struct CachedTablet {
@@ -24,7 +22,7 @@ struct CachedTablet {
 
 class LekvCli {
 public:
-    bool Init(const std::string& proxy_addr);
+    bool Init(const std::string& master_ip, uint16_t master_port);
     void Run();
 
 private:
@@ -47,24 +45,19 @@ private:
     bool SendAndRecv(RpcClient& client, const std::vector<uint8_t>& req,
         uint32_t& resp_req_id, std::vector<uint8_t>& payload);
 
-    std::string proxy_ip_;
-    uint16_t proxy_port_ = 0;
+    std::string master_ip_;
+    uint16_t master_port_ = 0;
     RpcClient proxy_conn_;    // 与 Proxy 的长连接
 
     uint32_t req_id_ = 1;
 };
 
 // ========== 初始化：仅解析 Proxy 地址 ==========
-bool LekvCli::Init(const std::string& proxy_addr) {
-    size_t colon = proxy_addr.find(':');
-    if (colon == std::string::npos) {
-        std::cerr << "Invalid proxy address, expect ip:port" << std::endl;
-        return false;
-    }
-    proxy_ip_ = proxy_addr.substr(0, colon);
-    proxy_port_ = static_cast<uint16_t>(std::stoi(proxy_addr.substr(colon + 1)));
+bool LekvCli::Init(const std::string& master_ip, uint16_t master_port) {
+    master_ip_ = master_ip;
+    master_port_ = master_port;
 
-    std::cout << "[Client] Proxy: " << proxy_addr << " (no local cache)" << std::endl;
+    std::cout << "[Client] Proxy: " << master_ip_ << " (no local cache)" << std::endl;
     return true;
 }
 
@@ -73,7 +66,7 @@ bool LekvCli::FetchRouteTable(std::vector<CachedTablet>& out) {
     out.clear();
 
     if (!proxy_conn_.IsConnected()) {
-        if (!proxy_conn_.Connect(proxy_ip_, proxy_port_)) { return false; }
+        if (!proxy_conn_.Connect(master_ip_, master_port_)) { return false; }
     }
 
     uint32_t rid = NextReqId();
@@ -83,7 +76,7 @@ bool LekvCli::FetchRouteTable(std::vector<CachedTablet>& out) {
     std::vector<uint8_t> payload;
     if (!SendAndRecv(proxy_conn_, req, resp_req_id, payload)) {
         proxy_conn_.Close();
-        if (!proxy_conn_.Connect(proxy_ip_, proxy_port_)) { return false; }
+        if (!proxy_conn_.Connect(master_ip_, master_port_)) { return false; }
         if (!SendAndRecv(proxy_conn_, req, resp_req_id, payload)) { return false; }
     }
 
@@ -321,31 +314,24 @@ void LekvCli::Run() {
 
 // ========== 程序入口 ==========
 int main(int argc, char** argv) {
-    std::string proxy_ip;
-    uint16_t proxy_port = 0;
+    std::string master_ip;
+    uint16_t master_port = 0;
     try {
-        std::ifstream file("../../src/config.json");
-        if (!file.is_open()) { throw std::runtime_error("配置文件 config.json 打开失败"); }
-        json j = json::parse(file);
-        const auto& address = j.at("ADDRESS_CONFIG");
-        proxy_ip = address[0].at("IP").get<std::string>();
-        proxy_port = address[0].at("PORT").get<uint16_t>();
-        file.close();
-    } catch (const json::parse_error& e) {
-        std::cerr << "JSON解析错误: " << e.what() << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "错误: " << e.what() << std::endl;
-    }
-
-    std::string proxy_addr = proxy_ip + ":" + std::to_string(proxy_port);
-
-    for (int i = 1 ; i < argc ; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--proxy" && i + 1 < argc) proxy_addr = argv[++i];
+        PeerInfo master_info;
+        read_master_config(master_info);
+        master_ip = master_info.ip;
+        master_port = master_info.port;
+        std::cout << "Master: " << master_ip << ":" << master_port << std::endl;
+    } catch (std::runtime_error& e) {
+        std::cerr << e.what() << std::endl;
+        return 1;
+    } catch (std::exception& e) {
+        std::cerr << "运行错误：" << e.what() << std::endl;
+        return 1;
     }
 
     LekvCli cli;
-    if (!cli.Init(proxy_addr)) return 1;
+    if (!cli.Init(master_ip, master_port)) return 1;
     cli.Run();
     return 0;
 }

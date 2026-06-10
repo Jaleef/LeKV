@@ -1,4 +1,4 @@
-# storage/CMakeLists.txt
+# src/storage/CMakeLists.txt
 
 # LevelDB 源码路径 （src
 set(LEVELDB_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/leveldb)

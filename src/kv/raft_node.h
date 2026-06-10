@@ -3,10 +3,8 @@
 
 #include "rpc_server.h"
 #include "storage_engine.h"
-#include "raft_types.h"
 #include "rpc_client.h"
-
-#include <json.hpp>
+#include "common.h"
 
 #include <atomic>
 #include <string>
@@ -14,19 +12,6 @@
 #include <condition_variable>
 #include <shared_mutex>
 
-// Tablet JSON 序列化（nlohmann/json ADL 自动匹配）
-inline void to_json(nlohmann::json& j, const Tablet& t) {
-    j = nlohmann::json{{"id", t.id}, {"start_key", t.start_key},
-                       {"end_key", t.end_key}, {"node_id", t.node_id},
-                       {"key_count", t.key_count}};
-}
-inline void from_json(const nlohmann::json& j, Tablet& t) {
-    j.at("id").get_to(t.id);
-    j.at("start_key").get_to(t.start_key);
-    j.at("end_key").get_to(t.end_key);
-    j.at("node_id").get_to(t.node_id);
-    j.at("key_count").get_to(t.key_count);
-}
 
 class RaftNode {
 public:
