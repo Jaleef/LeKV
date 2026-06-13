@@ -3,7 +3,7 @@
 
 #include <bit>
 
-namespace LEKV {
+namespace lekv {
 
 SpscQueue::SpscQueue(size_t capacity)
     : capacity_(bit_ceil(capacity | 1))    // 至少为 2，且为 2 的幂次方
