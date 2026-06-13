@@ -85,3 +85,15 @@ inline void from_json(const nlohmann::json& j, Tablet& t) {
     j.at("node_id").get_to(t.node_id);
     j.at("key_count").get_to(t.key_count);
 }
+
+inline size_t bit_ceil(size_t n) {
+    if (n <= 1) return 1;
+
+    n--;
+
+    for (size_t shift = 1 ; shift < sizeof(size_t) * 8 ; shift <<= 1) {
+        n |= n >> shift;
+    }
+    
+    return n + 1;
+}
