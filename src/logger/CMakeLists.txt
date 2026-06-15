@@ -1,6 +1,7 @@
 # src/logger/CMakeLists.txt
 add_library(logger 
     spsc_queue.cpp    
+    type_tag.cpp
 )
 
 target_include_directories(logger
