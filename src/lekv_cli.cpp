@@ -28,7 +28,7 @@ public:
 private:
     bool Execute(const std::string& line);
 
-    // 从 Proxy 实时拉取全量路由表（无缓存，每次调用都重新获取）
+    // 从 Master 实时拉取全量路由表（无缓存，每次调用都重新获取）
     bool FetchRouteTable(std::vector<CachedTablet>& out);
 
     // 路由层：在实时路由表中二分查找 key 对应的 DataNode 地址
@@ -47,26 +47,26 @@ private:
 
     std::string master_ip_;
     uint16_t master_port_ = 0;
-    RpcClient proxy_conn_;    // 与 Proxy 的长连接
+    RpcClient master_conn_;    // 与 Master 的长连接
 
     uint32_t req_id_ = 1;
 };
 
-// ========== 初始化：仅解析 Proxy 地址 ==========
+// ========== 初始化：仅解析 Master 地址 ==========
 bool LekvCli::Init(const std::string& master_ip, uint16_t master_port) {
     master_ip_ = master_ip;
     master_port_ = master_port;
 
-    std::cout << "[Client] Proxy: " << master_ip_ << " (no local cache)" << std::endl;
+    std::cout << "[Client] Master: " << master_ip_ << " (no local cache)" << std::endl;
     return true;
 }
 
-// ========== 从 Proxy 实时拉取全量路由表（无缓存）==========
+// ========== 从 Master 实时拉取全量路由表（无缓存）==========
 bool LekvCli::FetchRouteTable(std::vector<CachedTablet>& out) {
     out.clear();
 
-    if (!proxy_conn_.IsConnected()) {
-        if (!proxy_conn_.Connect(master_ip_, master_port_)) { return false; }
+    if (!master_conn_.IsConnected()) {
+        if (!master_conn_.Connect(master_ip_, master_port_)) { return false; }
     }
 
     uint32_t rid = NextReqId();
@@ -74,10 +74,10 @@ bool LekvCli::FetchRouteTable(std::vector<CachedTablet>& out) {
 
     uint32_t resp_req_id;
     std::vector<uint8_t> payload;
-    if (!SendAndRecv(proxy_conn_, req, resp_req_id, payload)) {
-        proxy_conn_.Close();
-        if (!proxy_conn_.Connect(master_ip_, master_port_)) { return false; }
-        if (!SendAndRecv(proxy_conn_, req, resp_req_id, payload)) { return false; }
+    if (!SendAndRecv(master_conn_, req, resp_req_id, payload)) {
+        master_conn_.Close();
+        if (!master_conn_.Connect(master_ip_, master_port_)) { return false; }
+        if (!SendAndRecv(master_conn_, req, resp_req_id, payload)) { return false; }
     }
 
     if (resp_req_id != rid || payload.empty() || payload[0] != BinaryProtocol::ST_OK) {
@@ -231,7 +231,7 @@ bool LekvCli::Execute(const std::string& line) {
     if (cmd == "tablets") {
         std::vector<CachedTablet> tablets;
         if (!FetchRouteTable(tablets)) {
-            std::cerr << "Failed to fetch route table from proxy" << std::endl;
+            std::cerr << "Failed to fetch route table from master" << std::endl;
             return false;
         }
         for (const auto& t : tablets) {
@@ -263,7 +263,7 @@ bool LekvCli::Execute(const std::string& line) {
     // 每次操作前实时拉取最新路由表（无缓存）
     std::vector<CachedTablet> tablets;
     if (!FetchRouteTable(tablets)) {
-        std::cerr << "Failed to fetch route table from proxy" << std::endl;
+        std::cerr << "Failed to fetch route table from master" << std::endl;
         return false;
     }
 
